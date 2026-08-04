@@ -404,7 +404,11 @@ def test_config_set_media_tools_updates_workspace_through_cli(
 
 
 def test_job_logs_help_offers_quiet_follow_mode() -> None:
-    result = CliRunner().invoke(app, ["job", "logs", "--help"])
+    result = CliRunner().invoke(
+        app,
+        ["job", "logs", "--help"],
+        terminal_width=200,
+    )
 
     assert result.exit_code == 0
     assert "--follow" in result.stdout

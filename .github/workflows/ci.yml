@@ -12,8 +12,8 @@ jobs:
   test:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.14'
       - name: Install uv
@@ -35,7 +35,7 @@ jobs:
       - name: Build release artifacts
         shell: pwsh
         run: .\scripts\build-release.ps1
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: video-material-agent-toolkit-wheels
           path: dist/*

@@ -3,11 +3,11 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-PACKAGE_ROOT = Path(__file__).parents[2]
 SKILL_ROOT = Path(__file__).parents[4] / "skills" / "semvideo"
 
 
@@ -31,7 +31,9 @@ def _load_context_gate():
 
 def test_skill_resolver_returns_compatible_absolute_cli_path() -> None:
     resolver = SKILL_ROOT / "scripts" / "resolve_semvideo.py"
-    cli = PACKAGE_ROOT / ".venv" / "Scripts" / "semvideo.exe"
+    resolved_cli = shutil.which("semvideo")
+    assert resolved_cli is not None
+    cli = Path(resolved_cli)
     environment = os.environ.copy()
     environment["SEMVIDEO_CLI"] = str(cli)
 
