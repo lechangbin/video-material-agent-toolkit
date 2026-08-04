@@ -1,0 +1,55 @@
+{
+  "plans": [
+    {
+      "initial_queries": [
+        {
+          "facet_ids": [
+            "facet_city_wakeup"
+          ],
+          "query_id": "query_city_wakeup",
+          "target_platforms": [
+            "bilibili",
+            "douyin",
+            "xiaohongshu"
+          ],
+          "text": "城市 清晨 苏醒 延时摄影"
+        }
+      ],
+      "query_plan_id": "qp_seg_001",
+      "required_visual_facets": [
+        {
+          "description": "清晨光线下逐渐活跃的城市空间",
+          "facet_id": "facet_city_wakeup"
+        }
+      ],
+      "segment_id": "seg_001",
+      "visual_strategy": "使用建立环境的城市清晨画面表达一天开始。"
+    },
+    {
+      "initial_queries": [
+        {
+          "facet_ids": [
+            "facet_commute"
+          ],
+          "query_id": "query_commute",
+          "target_platforms": [
+            "bilibili",
+            "douyin",
+            "xiaohongshu"
+          ],
+          "text": "早高峰 通勤 人群 街道"
+        }
+      ],
+      "query_plan_id": "qp_seg_002",
+      "required_visual_facets": [
+        {
+          "description": "地铁、公交站或街道中的通勤流动",
+          "facet_id": "facet_commute"
+        }
+      ],
+      "segment_id": "seg_002",
+      "visual_strategy": "以连续移动的人群和交通展示城市流动感。"
+    }
+  ],
+  "schema_version": "1.0"
+}

@@ -1,0 +1,47 @@
+# Environment variables and local secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Dependencies
+node_modules/
+.venv/
+venv/
+*.egg-info/
+
+# Build and test outputs
+dist/
+build/
+coverage/
+.coverage
+htmlcov/
+
+# Local application data and generated media artifacts
+data/
+semvideo-data/
+crv-out/
+*.sqlite
+*.sqlite3
+*.db
+
+# Caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.eslintcache
+.cache/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

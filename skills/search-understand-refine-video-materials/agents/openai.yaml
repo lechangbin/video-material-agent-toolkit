@@ -1,0 +1,4 @@
+interface:
+  display_name: "Search, Understand, Refine Video Materials"
+  short_description: "Connect video search, understanding, Top-K, and gap refinement"
+  default_prompt: "Use $search-understand-refine-video-materials to search, understand, rank, and refine video materials until sufficient or budget-limited."

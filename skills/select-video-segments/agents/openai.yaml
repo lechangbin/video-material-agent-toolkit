@@ -1,0 +1,4 @@
+interface:
+  display_name: "选择视频素材分段"
+  short_description: "依据主题需求对视频理解结果排序并选择 Top-K 分段"
+  default_prompt: "使用 $select-video-segments 汇总视频理解结果，并为当前主题选择可追踪的 Top-K 素材分段。"

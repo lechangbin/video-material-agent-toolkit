@@ -1,0 +1,159 @@
+# 查找下载工具
+
+本仓库用于开发一套同时适合人类用户和 Agent 使用的查找下载工具。
+
+长期计划提供两个用户入口：
+
+- 可脚本化调用的 CLI。
+- 面向人类用户的前端操作界面。
+
+业务能力将首先实现为与界面无关的核心模块和应用服务，再分别接入 CLI 与前端。具体功能完成并验证后再进行正式的终端命令包装，但开发过程中必须持续保留清晰、可复用的调用接口。
+
+第一阶段只交付面向 Agent 和脚本调用的 Python 3.14 CLI；Web/API、桌面 GUI 和浏览器前端暂不实现。
+
+第一阶段 CLI 可执行文件名为 `material-collector`。第一版已经实现：
+
+```text
+material-collector run
+material-collector resume
+material-collector cancel
+material-collector status
+material-collector sessions list
+material-collector auth status|login|logout
+material-collector contracts normalize
+material-collector review list|approve|reject
+material-collector result export
+material-collector media fetch-hq
+```
+
+`run` 会冻结输入，检查三平台登录态，在登录不可用时自动打开有头 Chrome，
+随后用无头 Chrome 并发搜索 Bilibili、抖音和小红书，解析媒体单元并下载低码率
+代理。低码率代理选择源站最高且不超过 720p 的版本，并在落地后通过本地
+`ffprobe` 再次校验实际分辨率。跨平台版本会分别下载，再由本地音频与视频指纹确认
+同作品并按 `Bilibili > 抖音 > 小红书` 标记主来源；其他版本仍完整保留。全部发现
+来源都会写入会话的 `collection-result.json`；代理媒体以 SHA-256 内容寻址保存在
+长期素材工作区，后续恢复不会重复已提交阶段。
+
+超过 20 分钟或时长未知的视频只记录稳定链接并进入人工复核，不自动送入视频理解。
+查找下载 CLI 在真实搜索和代理下载结束后以退出码 `20` 到达
+`integration_required` 检查点。它明确表示“采集完成、等待外部集成”，不会在
+CLI 内伪造理解、Top-K、落库或素材充分性结果。
+
+完整命令契约见 `docs/design/cli-contract.md`。
+
+`contracts normalize` 是无状态、只读的机器接口，用于让外部编排在创建会话前取得与
+`run` 完全相同的规范化采集输入和 QueryPlan；它不创建会话或写入素材工作区。
+
+## 开发环境
+
+安装 uv 后，在仓库根目录运行：
+
+```powershell
+uv sync
+```
+
+这会按 `.python-version` 使用 Python 3.14，并在 `.venv` 中安装 `pyproject.toml` 与 `uv.lock` 定义的依赖。
+
+运行时复用本机已安装的 Google Chrome，不要求另行下载 Playwright Chromium。
+登录配置默认保存在当前 Windows 用户的本地应用数据目录，不进入仓库和素材工作区。
+浏览器固定以 `--no-proxy-server` 启动，HTTP 下载固定禁用环境代理，因此默认不会
+使用 Windows 系统代理、`HTTP_PROXY`/`HTTPS_PROXY` 或本机 `127.0.0.1:10808`。
+认证探针、有头登录和平台无头浏览器均显式启用 Chromium sandbox；有头登录会输出
+逐平台探针、窗口导航、窗口打开和等待事件，并提示用户检查任务栏。Windows 桌面
+验证会把可见顶层窗口绑定到本次认证 profile 的非 headless Chrome 进程。登录
+完成前关闭全部页面会立即进入可恢复的 `auth_required`，不会静默等待完整超时。
+抖音和小红书优先使用已渲染页面的登录标志判断状态，身份接口仅作为兜底，避免
+平台裸接口拒绝请求时把已登录页面误判为未登录。
+
+## 当前 CLI 示例
+
+仓库提供可直接启动采集的示例文件：
+
+- `examples/collection-input.json`
+- `examples/query-plans.json`
+
+```powershell
+uv run material-collector run `
+  --workspace D:\video-materials `
+  --input .\examples\collection-input.json `
+  --query-plans .\examples\query-plans.json `
+  --request-timeout-seconds 30 `
+  --progress-format jsonl
+```
+
+命令的标准输出是一个最终 JSON 对象，进度和诊断只写入标准错误。首次运行若需要
+登录会自动打开浏览器；登录完成后无需再次执行命令。保存输出中的 `session_id`
+后可查询或恢复：
+
+```powershell
+uv run material-collector status `
+  --workspace D:\video-materials `
+  --session-id <session-id>
+
+uv run material-collector sessions list `
+  --workspace D:\video-materials
+
+uv run material-collector resume `
+  --workspace D:\video-materials `
+  --session-id <session-id> `
+  --progress-format text
+
+uv run material-collector result export `
+  --workspace D:\video-materials `
+  --session-id <session-id>
+```
+
+`--request-timeout-seconds` 是每个平台请求的显式超时，默认 30 秒，并在创建会话
+时冻结；恢复会话继续使用同一个值。`--progress-format` 只改变当前命令写入
+`stderr` 的进度格式：默认 `jsonl` 适合 Agent，`text` 适合人类观察，不会污染
+`stdout` 的单个最终 JSON。
+
+`status` 和 `cancel` 额外返回 `runtime`，包含取消状态、租约 owner、到期时间、
+是否已经过期和下一阶段。执行租约默认 60 秒；活执行器在认证、搜索、解析和下载等
+长操作期间每 5 秒续租并检查取消，认证锁轮询本身也可立即取消；死亡执行器最多等待
+一个租约窗口即可恢复。对已完成或已取消会话再次执行 `cancel` 是幂等操作。
+
+仓库级 Skill `.agents/skills/collect-video-materials/` 为 Agent 提供确定性的
+`run/resume/status/cancel` 调用边界。Agent 必须调用 Skill 随附脚本，不能自行拼装
+`Start-Process`、PowerShell Job 或重复执行器。Runner 会分别记录包装进程与实际
+collector 子进程身份；同一 session 的 `resume` 保持单执行器，不同 `run` 可在
+同一素材工作区并存。
+
+仓库级总编排 Skill
+`.agents/skills/search-understand-refine-video-materials/` 在 CLI 边界之外连接
+`material-collector`、已安装的 Semvideo 和 `select-video-segments`：按主题段执行
+搜索与 720p 代理下载，复用完整视频理解结果，在隔离子代理中选择 Top-K，并由主
+Agent 对照原始文案判断是否需要有界补搜。它只通过版本化文件和各工具公开接口联动，
+不修改 Collector SQLite 或 Semvideo 任务文件。
+
+会话运行数据位于调用方指定的素材工作区，而不是源码仓库或应用安装目录：
+
+```text
+<workspace>/
+  .material-collector/
+    workspace.json
+    sessions/
+      <session-id>/
+        session.sqlite3
+        collection-result.json
+        downloads/
+        input/
+          collection-input.json
+          query-plans.json
+  assets/
+    sha256/
+```
+
+## 当前状态
+
+第一版 CLI、会话恢复、三平台适配器、内容寻址资产、来源清单和本地媒体指纹均已
+完成离线自动化验证。真实平台页面可能随时发生结构变化；首次使用建议以少量查询
+做受控烟雾测试。Semvideo 联动、隔离子代理 Top-K、素材缺口判断和递归补搜已由
+下游总编排 Skill 定义；切分落库和高码率按需下载仍等待后续剪辑工具接口。查找下载
+CLI 继续作为每轮确定性采集执行器，不在自身内部承担剪辑推理。
+
+## 开发约定
+
+完整的架构、CLI、前端、安全和完成标准见 [AGENTS.md](AGENTS.md)。
+第一版实现边界和验证记录见
+[docs/implementation/v1-usable.md](docs/implementation/v1-usable.md)。

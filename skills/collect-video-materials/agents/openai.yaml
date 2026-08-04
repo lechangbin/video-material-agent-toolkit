@@ -1,0 +1,4 @@
+interface:
+  display_name: "Collect Video Materials"
+  short_description: "Safely orchestrate resumable material collection"
+  default_prompt: "Use $collect-video-materials to run, monitor, cancel, or resume a local video-material collection session."

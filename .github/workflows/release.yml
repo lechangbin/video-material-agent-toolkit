@@ -1,0 +1,47 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Install uv
+        run: python -m pip install uv
+      - name: Test material-collector
+        shell: pwsh
+        run: |
+          Set-Location packages/material-collector
+          uv sync
+          uv run pytest
+          uv run ruff check .
+          uv run mypy .
+      - name: Test Semvideo
+        shell: pwsh
+        run: |
+          Set-Location packages/semvideo
+          python -m pip install -e ".[dev]"
+          python -m pytest -q
+      - name: Build wheels
+        shell: pwsh
+        run: .\scripts\build-release.ps1
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME .\dist\* `
+            --repo $env:GITHUB_REPOSITORY `
+            --title $env:GITHUB_REF_NAME `
+            --generate-notes `
+            --verify-tag

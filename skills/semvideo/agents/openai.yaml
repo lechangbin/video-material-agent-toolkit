@@ -1,0 +1,4 @@
+interface:
+  display_name: "Semvideo 视频理解"
+  short_description: "通过本地 CLI 理解视频、查询任务、恢复处理并导出片段"
+  default_prompt: "Use $semvideo to process a local video and return its semantic segments and summaries."

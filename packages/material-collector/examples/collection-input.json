@@ -1,0 +1,18 @@
+{
+  "full_script": "城市在清晨逐渐苏醒。通勤的人群让街道重新流动起来。",
+  "schema_version": "1.0",
+  "segments": [
+    {
+      "order": 1,
+      "segment_id": "seg_001",
+      "text": "城市在清晨逐渐苏醒。"
+    },
+    {
+      "content_suggestion": "地铁、公交站与步行人群",
+      "order": 2,
+      "segment_id": "seg_002",
+      "text": "通勤的人群让街道重新流动起来。"
+    }
+  ],
+  "theme": "城市清晨"
+}
