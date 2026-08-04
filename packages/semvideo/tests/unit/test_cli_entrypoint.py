@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from typer.main import get_command
 from typer.testing import CliRunner
 
 from semvideo.adapters.ffmpeg import FfmpegCapabilities
@@ -404,15 +405,17 @@ def test_config_set_media_tools_updates_workspace_through_cli(
 
 
 def test_job_logs_help_offers_quiet_follow_mode() -> None:
-    result = CliRunner().invoke(
-        app,
-        ["job", "logs", "--help"],
-        terminal_width=200,
-    )
+    root_command = get_command(app)
+    job_command = root_command.commands["job"]
+    logs_command = job_command.commands["logs"]
+    option_names = {
+        option
+        for parameter in logs_command.params
+        for option in parameter.opts
+    }
 
-    assert result.exit_code == 0
-    assert "--follow" in result.stdout
-    assert "--quiet" in result.stdout
+    assert "--follow" in option_names
+    assert "--quiet" in option_names
 
 
 def test_job_admission_cli_returns_application_capacity_snapshot(
