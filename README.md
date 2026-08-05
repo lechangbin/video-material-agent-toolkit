@@ -11,11 +11,52 @@
 - 四个遵循开放 [Agent Skills 规范](https://agentskills.io/) 的 Skills，用于把搜索、
   理解、Top-K 选择和有界补搜编排为可追踪工作流。
 
-当前发布版本为 `0.1.3`，支持 Windows x64 和 CPython 3.14.6。
+当前发布版本为 `0.1.3`，支持 Windows x64 和 CPython `>=3.14.6,<3.15`。
 
 > 本项目提供技术工具，不授予任何第三方视频、音乐、肖像、平台数据或商标的使用权。
 > 使用者必须遵守目标平台条款、适用法律和素材权利要求。不要使用本项目绕过访问控制、
 > 大规模抓取或干扰平台服务。
+
+## 只把仓库地址交给 Agent
+
+可以。仓库根目录的 [`AGENTS.md`](AGENTS.md) 是 Agent 自举协议，
+[`scripts/bootstrap-agent.ps1`](scripts/bootstrap-agent.ps1) 是唯一的自动配置入口。把下面
+这段提示词和仓库地址交给任意具备 Windows PowerShell 与终端权限的 Agent：
+
+```text
+请配置这个仓库：https://github.com/lechangbin/video-material-agent-toolkit
+克隆默认分支，完整读取仓库根目录 AGENTS.md，并严格执行其中的 Fresh-machine setup。
+不要自行改写安装、PATH、进程控制或 Skills 复制命令。最后返回 bootstrap 脚本的完整
+JSON 结果，以及仍需我亲自完成的交互步骤。
+```
+
+Agent 会从仓库根目录执行：
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap-agent.ps1
+```
+
+该入口会检测并安装缺失的 Python 3.14、uv、Node.js、Chrome 和 FFmpeg，从最新 GitHub
+Release 下载并校验两个 wheel，然后通过 `npx skills` 给受支持的 Agent 安装全部四个
+Skills。它不会写入 API Key，也不会代替用户完成平台扫码登录。
+
+只检查、不修改机器：
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap-agent.ps1 -CheckOnly
+```
+
+如果 WorkBuddy 或其他自定义宿主未被 `npx skills` 识别，让 Agent 加上传入其 Skills
+根目录：
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap-agent.ps1 `
+  -AdditionalSkillsDirectory 'C:\path\to\workbuddy\skills'
+```
+
+自动配置结束后仍有两个有意保留的人工边界：用户通过安全环境注入
+`SEMVIDEO_API_KEY`；首次搜索需要登录时，用户在可见浏览器中完成扫码。视频工作区路径
+也必须由用户明确指定，然后 Agent 才运行 `semvideo init` 和 `semvideo doctor`。
 
 ## 仓库结构
 
@@ -29,6 +70,7 @@ skills/
   select-video-segments/
   search-understand-refine-video-materials/
 scripts/
+  bootstrap-agent.ps1
   build-release.ps1
   install-tools.ps1
 ```
@@ -52,7 +94,7 @@ winget install --id Gyan.FFmpeg --exact
 重新打开 PowerShell，确认：
 
 ```powershell
-python --version   # 需要 Python 3.14.6
+python --version   # 需要 CPython >=3.14.6,<3.15
 uv --version
 node --version
 ffmpeg -version
@@ -84,7 +126,7 @@ gh release download v0.1.3 `
 验证 SHA-256 后安装：
 
 ```powershell
-uv tool install --python 3.14.6 `
+uv tool install --python 3.14 `
   .\video-toolkit-release\video_material_collector-0.1.3-py3-none-any.whl
 
 python -m pip install --user `

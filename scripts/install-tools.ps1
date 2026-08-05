@@ -3,7 +3,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$ReleaseDirectory,
 
-    [switch]$InstallFfmpeg
+    [switch]$InstallFfmpeg,
+
+    [string]$PythonExecutable
 )
 
 $ErrorActionPreference = 'Stop'
@@ -45,9 +47,42 @@ foreach ($wheel in @($collectorWheel, $semvideoWheel)) {
     }
 }
 
-$pythonVersion = & python -c 'import platform; print(platform.python_version())'
-if ($LASTEXITCODE -ne 0 -or $pythonVersion.Trim() -ne '3.14.6') {
-    throw "Semvideo requires CPython 3.14.6; found '$pythonVersion'."
+if ([string]::IsNullOrWhiteSpace($PythonExecutable)) {
+    $pythonLauncher = Get-Command py.exe -ErrorAction SilentlyContinue
+    if ($null -ne $pythonLauncher) {
+        $pythonPathOutput = @(& $pythonLauncher.Source -3.14 -c 'import sys; print(sys.executable)' 2>$null)
+        if ($LASTEXITCODE -eq 0 -and $pythonPathOutput.Count -gt 0) {
+            $PythonExecutable = $pythonPathOutput[-1].Trim()
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($PythonExecutable)) {
+        $pythonCommand = Get-Command python.exe -ErrorAction SilentlyContinue
+        if ($null -ne $pythonCommand) {
+            $PythonExecutable = $pythonCommand.Source
+        }
+    }
+}
+
+if ([string]::IsNullOrWhiteSpace($PythonExecutable) -or
+    -not (Test-Path -LiteralPath $PythonExecutable -PathType Leaf)) {
+    throw 'A CPython 3.14 executable is required. Pass its path with -PythonExecutable.'
+}
+
+$pythonInfoOutput = @(
+    & $PythonExecutable -c "import json, sys; print(json.dumps({'version': list(sys.version_info[:3]), 'implementation': sys.implementation.name}))"
+)
+if ($LASTEXITCODE -ne 0 -or $pythonInfoOutput.Count -eq 0) {
+    throw "Unable to inspect Python executable '$PythonExecutable'."
+}
+$pythonInfo = $pythonInfoOutput[-1] | ConvertFrom-Json
+$pythonVersion = @($pythonInfo.version | ForEach-Object { [int]$_ })
+$pythonSupported = $pythonInfo.implementation -eq 'cpython' -and
+    $pythonVersion[0] -eq 3 -and
+    $pythonVersion[1] -eq 14 -and
+    $pythonVersion[2] -ge 6
+if (-not $pythonSupported) {
+    $foundVersion = $pythonVersion -join '.'
+    throw "Semvideo requires CPython >=3.14.6,<3.15; found '$($pythonInfo.implementation) $foundVersion'."
 }
 
 if ($InstallFfmpeg) {
@@ -61,14 +96,14 @@ if ($InstallFfmpeg) {
 }
 
 $collectorOutput = @(
-    & uv tool install --force --python 3.14.6 $collectorWheel.FullName 2>&1
+    & uv tool install --force --python $PythonExecutable $collectorWheel.FullName 2>&1
 )
 if ($LASTEXITCODE -ne 0) {
     throw "material-collector installation failed.`n$($collectorOutput -join [Environment]::NewLine)"
 }
 
 $semvideoOutput = @(
-    & python -m pip install --user --upgrade $semvideoWheel.FullName 2>&1
+    & $PythonExecutable -m pip install --user --upgrade $semvideoWheel.FullName 2>&1
 )
 if ($LASTEXITCODE -ne 0) {
     throw "semvideo installation failed.`n$($semvideoOutput -join [Environment]::NewLine)"
@@ -91,4 +126,5 @@ $semvideoCommand = Get-Command semvideo -ErrorAction SilentlyContinue
     }
     ffmpeg_requested = [bool]$InstallFfmpeg
     checksums_verified = $true
+    python = $PythonExecutable
 } | ConvertTo-Json -Depth 3
