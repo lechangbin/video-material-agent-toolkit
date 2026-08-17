@@ -8,7 +8,7 @@ tool's authoritative state.
 
 | Owner | Responsibility | Authoritative state |
 | --- | --- | --- |
-| `material-collector` | Search three platforms, resolve works, download 720p proxies | session SQLite and `collection-result.json` |
+| `material-collector` | Search currently enabled Bilibili/Douyin sources, resolve works, download 720p proxies | session SQLite and `collection-result.json` |
 | Semvideo | Understand one physical proxy and expose complete semantic segments | Semvideo public job and segment CLI |
 | `select-video-segments` | Rank one cumulative candidate catalog into a bounded Top-K | selection v2 result and audit |
 | Parent Agent | Judge sufficiency against the original script and create gap queries | `gap-decision.json` |

@@ -25,6 +25,9 @@ terminal command to replace the bundled runner.
 
 ## Monitor
 
+- Treat `platform_search_temporarily_disabled` for `xiaohongshu` as the declared release
+  mitigation. Continue monitoring the same Bilibili/Douyin execution and report that
+  Xiaohongshu was not searched. Do not retry the session to force that platform.
 - Treat `status=started` as process creation, not collection completion.
 - While the recorded wrapper `process_id` is alive, read only its recorded stderr and invoke
   `Operation=status` through the runner. Treat `collector_process_id` as the actual CLI child

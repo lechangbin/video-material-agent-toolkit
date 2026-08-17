@@ -5,8 +5,9 @@
 第一版从版本化 `CollectionInput` 和 `QueryPlans` 开始，按以下顺序运行：
 
 1. 创建隔离会话，规范化、哈希并冻结输入。
-2. 按 Bilibili、抖音、小红书顺序检查登录态；失效时串行打开有头 Chrome。
-3. 对一个 QueryPlan 内的查询执行三平台无头并发搜索。
+2. 当前缓解期间只按 Bilibili、抖音顺序检查采集登录态；失效时串行打开有头 Chrome。
+3. 对一个 QueryPlan 内的查询执行 Bilibili 和抖音无头并发搜索；小红书请求记录为
+   `platform_search_temporarily_disabled`，不接触其搜索适配器。
 4. 保存所有候选来源、发现查询与排名，解析视频或分 P 媒体单元。
 5. 按 `Bilibili > 抖音 > 小红书` 的平台轮转顺序接纳本轮媒体。
 6. 对不超过 20 分钟的媒体下载最高且不超过 720p 的低码率代理，以 `ffprobe`

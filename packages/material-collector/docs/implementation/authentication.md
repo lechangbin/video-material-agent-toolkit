@@ -6,6 +6,10 @@
 
 ## 边界
 
+- 采集工作流的临时平台门禁只传入 Bilibili 和抖音，避免小红书 HTTP 406 探针阻断
+  其余平台。显式 `auth login --platform xiaohongshu` 仍保留用于人工修复验证；该缓解
+  不把 406 解释为登录成功。
+
 - 默认配置根目录为 `%LOCALAPPDATA%\material-collector\auth\`；测试和嵌入调用可注入
   `root_dir`，不需要修改用户真实登录态。
 - 每个平台配置位于 `<root>/<auth-profile>/<platform>/`。配置标识经过白名单校验，

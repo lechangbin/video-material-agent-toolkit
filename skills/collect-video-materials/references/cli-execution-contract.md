@@ -66,6 +66,14 @@ downstream resolution. Preserve its `requested_requests`, `completed_requests`,
 `failed_requests`, and `not_attempted_requests` counts. Neither event authorizes a second
 executor or replaces final stdout and runner-managed `status`.
 
+## Temporary platform mitigation
+
+Collection authentication and search currently execute Bilibili and Douyin only. QueryPlans may
+still contain Xiaohongshu because the versioned 1.0 contract is unchanged, but the workflow does
+not call that platform and publishes one `platform_search_temporarily_disabled` issue with
+`temporary=true`. Continue with committed Bilibili/Douyin results and surface the omission to the
+user. Explicit `auth login --platform xiaohongshu` remains available for repair verification.
+
 ## Runner errors
 
 - `operation_invalid`: the caller tried to inject an operation other than `run`, `resume`,

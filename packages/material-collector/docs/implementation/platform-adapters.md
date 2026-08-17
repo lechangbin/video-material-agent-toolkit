@@ -2,6 +2,11 @@
 
 状态：已实现离线契约；真实平台烟雾测试待执行
 
+运行时缓解：小红书适配器代码与离线测试保留，但采集工作流暂时不调用其认证、搜索、
+解析或下载路径。原因是未知渲染态后的无签名身份探针会返回 HTTP 406，并在可见登录前
+中止。工作流继续执行 Bilibili 和抖音，并发布
+`platform_search_temporarily_disabled`；完整修复由 GitHub Issue #10 跟踪。
+
 ## 交付范围
 
 `material_collector.infrastructure.platforms` 提供 Bilibili、抖音和小红书适配器。

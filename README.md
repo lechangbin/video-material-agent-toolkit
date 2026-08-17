@@ -5,13 +5,17 @@
 
 面向本地 AI Agent 的视频素材工作流工具集，包含：
 
-- `material-collector`：从 Bilibili、抖音和小红书搜索视频来源，下载最高不超过
+- `material-collector`：当前从 Bilibili 和抖音搜索视频来源，下载最高不超过
   720p 的理解代理，持久化可恢复会话，并保留来源清单；
 - `semvideo`：对本地视频进行语义理解、分段、镜头语言标注、查询和片段导出；
 - 四个遵循开放 [Agent Skills 规范](https://agentskills.io/) 的 Skills，用于把搜索、
   理解、Top-K 选择和有界补搜编排为可追踪工作流。
 
 当前发布版本为 `0.1.3`，支持 Windows x64 和 CPython 3.14.6。
+
+> 小红书搜索因认证探针的 HTTP 406 兼容问题暂时停用。采集会继续执行 Bilibili
+> 和抖音，并在结构化结果中返回 `platform_search_temporarily_disabled`；小红书
+> 适配器和显式 `auth login --platform xiaohongshu` 保留供后续修复验证。
 
 > 本项目提供技术工具，不授予任何第三方视频、音乐、肖像、平台数据或商标的使用权。
 > 使用者必须遵守目标平台条款、适用法律和素材权利要求。不要使用本项目绕过访问控制、
@@ -172,7 +176,7 @@ semvideo doctor --workspace C:\video-workspace --json
 ## 最小使用流程
 
 1. 主 Agent 根据完整文案和主题分段生成版本化 QueryPlan。
-2. `material-collector` 搜索三平台并下载 720p 理解代理。
+2. `material-collector` 搜索当前启用的 Bilibili 和抖音并下载 720p 理解代理。
 3. 到达 `integration_required` 后，Semvideo 理解新代理。
 4. 隔离子 Agent 根据结构化理解结果选择 Top-K。
 5. 主 Agent 判断素材是否充分；不足时生成下一轮 QueryPlan。

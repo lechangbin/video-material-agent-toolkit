@@ -40,6 +40,8 @@ from material_collector.infrastructure.source_manifest_store import (
     SqliteSourceManifestStore,
 )
 
+ENABLED_COLLECTION_PLATFORMS = (Platform.BILIBILI, Platform.DOUYIN)
+
 
 def _write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -51,7 +53,7 @@ def _create_session(
     *,
     max_videos: int = 6,
     add_bilibili_query: bool = False,
-    add_xiaohongshu_query: bool = False,
+    add_douyin_query: bool = False,
     request_timeout_seconds: int = 30,
 ) -> tuple[Path, str]:
     input_path = tmp_path / "input.json"
@@ -77,12 +79,12 @@ def _create_session(
                 "facet_ids": ["facet_change"],
             }
         )
-    if add_xiaohongshu_query:
+    if add_douyin_query:
         queries.append(
             {
-                "query_id": "query_city_xiaohongshu_second",
+                "query_id": "query_city_douyin_second",
                 "text": "城市更新 公共空间",
-                "target_platforms": ["xiaohongshu"],
+                "target_platforms": ["douyin"],
                 "facet_ids": ["facet_change"],
             }
         )
@@ -571,8 +573,8 @@ async def test_workflow_collects_sources_and_pauses_for_integration(
     result = await workflow.run(workspace, session_id)
 
     assert result.status == "integration_required"
-    assert result.candidates_found == 3
-    assert result.media_units_found == 3
+    assert result.candidates_found == 2
+    assert result.media_units_found == 2
     assert result.proxies_ready == 2
     assert result.action_required is not None
     assert result.action_required.type == "integration_required"
@@ -582,7 +584,7 @@ async def test_workflow_collects_sources_and_pauses_for_integration(
         "ingestion_result",
     )
     assert result.segments[0].segment_id == "seg_city"
-    assert result.segments[0].candidates_found == 3
+    assert result.segments[0].candidates_found == 2
     assert Path(result.result_path).is_file()
     snapshot = SessionRuntime().inspect(workspace, session_id)
     assert snapshot.status == "integration_required"
@@ -591,7 +593,7 @@ async def test_workflow_collects_sources_and_pauses_for_integration(
 
     repeated = await workflow.run(workspace, session_id)
     assert repeated.status == "integration_required"
-    assert sum(adapter.search_count for adapter in adapters.values()) == 3
+    assert sum(adapter.search_count for adapter in adapters.values()) == 2
     assert sum(adapter.fetch_count for adapter in adapters.values()) == 2
 
 
@@ -636,7 +638,7 @@ async def test_each_search_expression_uses_per_platform_limit_of_twenty(
 
     assert adapters[Platform.BILIBILI].seen_search_limits == [20, 20]
     assert adapters[Platform.DOUYIN].seen_search_limits == [20]
-    assert adapters[Platform.XIAOHONGSHU].seen_search_limits == [20]
+    assert adapters[Platform.XIAOHONGSHU].seen_search_limits == []
 
 
 @pytest.mark.asyncio
@@ -704,18 +706,20 @@ async def test_same_author_and_title_downloads_every_platform_before_fingerprint
 
     result = await workflow.run(workspace, session_id)
 
-    assert result.candidates_found == 3
-    assert result.proxies_ready == 3
+    assert result.candidates_found == 2
+    assert result.proxies_ready == 2
     assert adapters[Platform.BILIBILI].fetch_count == 1
     assert adapters[Platform.DOUYIN].fetch_count == 1
-    assert adapters[Platform.XIAOHONGSHU].fetch_count == 1
+    assert adapters[Platform.XIAOHONGSHU].fetch_count == 0
     manifest = workflow._manifest.export(workspace, session_id)
     assert len(manifest.work_groups) == 1
     group = manifest.work_groups[0]
     assert group.status == "confirmed_duplicate"
     assert group.primary_media_unit_id.startswith("bilibili:")
-    assert [member.platform for member in group.members] == list(PLATFORM_ORDER)
-    assert [member.fallback_order for member in group.members] == [1, 2, 3]
+    assert [member.platform for member in group.members] == list(
+        ENABLED_COLLECTION_PLATFORMS
+    )
+    assert [member.fallback_order for member in group.members] == [1, 2]
     assert (
         sum(
             unit.eligible_for_understanding
@@ -755,7 +759,7 @@ async def test_unavailable_fingerprints_keep_candidates_independent(
 
     assert result.status == "integration_required"
     manifest = workflow._manifest.export(workspace, session_id)
-    assert len(manifest.work_groups) == 3
+    assert len(manifest.work_groups) == 2
     assert {group.status for group in manifest.work_groups} == {"fingerprint_unavailable"}
     assert all(
         unit.eligible_for_understanding
@@ -782,7 +786,7 @@ async def test_unrelated_cross_platform_candidates_skip_fingerprinting(
 
     assert fingerprints.compare_count == 0
     manifest = workflow._manifest.export(workspace, session_id)
-    assert len(manifest.work_groups) == 3
+    assert len(manifest.work_groups) == 2
     assert {group.status for group in manifest.work_groups} == {"independent"}
 
 
@@ -840,10 +844,13 @@ async def test_partial_platform_search_failure_continues_with_committed_sources(
     result = await workflow.run(workspace, session_id)
 
     assert result.status == "integration_required"
-    assert result.candidates_found == 2
-    assert result.media_units_found == 2
-    assert result.proxies_ready == 2
-    assert [issue.code for issue in result.issues] == ["platform_request_rejected"]
+    assert result.candidates_found == 1
+    assert result.media_units_found == 1
+    assert result.proxies_ready == 1
+    assert [issue.code for issue in result.issues] == [
+        "platform_search_temporarily_disabled",
+        "platform_request_rejected",
+    ]
     assert adapters[Platform.DOUYIN].resolve_count == 0
     assert adapters[Platform.DOUYIN].fetch_count == 0
 
@@ -854,11 +861,11 @@ async def test_partial_search_reports_settled_plan_instead_of_committed(
 ) -> None:
     workspace, session_id = _create_session(tmp_path, max_videos=9)
     adapters = {platform: _Platform(platform) for platform in PLATFORM_ORDER}
-    adapters[Platform.XIAOHONGSHU].search_failures.append(
+    adapters[Platform.DOUYIN].search_failures.append(
         CollectorError(
             "platform_request_rejected",
             "temporary",
-            details={"platform": "xiaohongshu", "retryable": True},
+            details={"platform": "douyin", "retryable": True},
         )
     )
     progress = _RecordingProgress()
@@ -878,9 +885,9 @@ async def test_partial_search_reports_settled_plan_instead_of_committed(
             "query_plan_id": "qp_seg_city",
             "status": "completed_with_issues",
             "requested_requests": 3,
-            "completed_requests": 2,
+            "completed_requests": 1,
             "failed_requests": 1,
-            "not_attempted_requests": 0,
+            "not_attempted_requests": 1,
         },
     ) in progress.events
     assert all(event != "search_plan_committed" for event, _details in progress.events)
@@ -892,7 +899,8 @@ async def test_all_platform_searches_retryable_keeps_search_stage_resumable(
 ) -> None:
     workspace, session_id = _create_session(tmp_path, max_videos=9)
     adapters = {platform: _Platform(platform) for platform in PLATFORM_ORDER}
-    for adapter in adapters.values():
+    for platform in ENABLED_COLLECTION_PLATFORMS:
+        adapter = adapters[platform]
         adapter.search_failures.append(
             CollectorError(
                 "platform_request_rejected",
@@ -912,7 +920,11 @@ async def test_all_platform_searches_retryable_keeps_search_stage_resumable(
     result = await workflow.run(workspace, session_id)
 
     assert result.status == "integration_required"
-    assert all(adapter.search_count == 2 for adapter in adapters.values())
+    assert all(
+        adapters[platform].search_count == 2
+        for platform in ENABLED_COLLECTION_PLATFORMS
+    )
+    assert adapters[Platform.XIAOHONGSHU].search_count == 0
 
 
 @pytest.mark.asyncio
@@ -928,7 +940,7 @@ async def test_terminal_search_failure_is_not_replayed_as_success(
             details={"platform": "bilibili", "retryable": False},
         )
     )
-    for platform in (Platform.DOUYIN, Platform.XIAOHONGSHU):
+    for platform in (Platform.DOUYIN,):
         adapters[platform].search_failures.extend(
             [
                 CollectorError(
@@ -954,7 +966,7 @@ async def test_terminal_search_failure_is_not_replayed_as_success(
 
     assert adapters[Platform.BILIBILI].search_count == 1
     assert adapters[Platform.DOUYIN].search_count == 2
-    assert adapters[Platform.XIAOHONGSHU].search_count == 2
+    assert adapters[Platform.XIAOHONGSHU].search_count == 0
 
 
 @pytest.mark.asyncio
@@ -963,11 +975,11 @@ async def test_settled_search_issues_survive_resume_from_later_stage(
 ) -> None:
     workspace, session_id = _create_session(tmp_path, max_videos=9)
     adapters = {platform: _Platform(platform) for platform in PLATFORM_ORDER}
-    adapters[Platform.XIAOHONGSHU].search_failures.append(
+    adapters[Platform.BILIBILI].search_failures.append(
         CollectorError(
             "platform_response_timeout",
             "temporary",
-            details={"platform": "xiaohongshu", "retryable": True},
+            details={"platform": "bilibili", "retryable": True},
         )
     )
     adapters[Platform.DOUYIN].resolve_failures.append(
@@ -990,8 +1002,11 @@ async def test_settled_search_issues_survive_resume_from_later_stage(
     result = await workflow.run(workspace, session_id)
 
     assert result.status == "integration_required"
-    assert [issue.code for issue in result.issues] == ["platform_response_timeout"]
-    assert result.issues[0].details["platform"] == "xiaohongshu"
+    assert [issue.code for issue in result.issues] == [
+        "platform_search_temporarily_disabled",
+        "platform_response_timeout",
+    ]
+    assert result.issues[1].details["platform"] == "bilibili"
 
 
 @pytest.mark.asyncio
@@ -1081,24 +1096,27 @@ async def test_authentication_loss_reauthenticates_once_and_retries_only_platfor
     result = await workflow.run(workspace, session_id)
 
     assert result.status == "integration_required"
-    assert authentication.ensure_calls == [PLATFORM_ORDER, (Platform.DOUYIN,)]
+    assert authentication.ensure_calls == [
+        ENABLED_COLLECTION_PLATFORMS,
+        (Platform.DOUYIN,),
+    ]
     assert adapters[Platform.DOUYIN].search_count == 2
     assert adapters[Platform.BILIBILI].search_count == 1
-    assert adapters[Platform.XIAOHONGSHU].search_count == 1
+    assert adapters[Platform.XIAOHONGSHU].search_count == 0
     assert [
         details["platform"]
         for event, details in progress.events
         if event == "authentication_probe_started"
     ] == ["bilibili", "douyin"]
-    committed = next(
+    settled = next(
         details
         for event, details in progress.events
-        if event == "search_plan_committed"
+        if event == "search_plan_settled"
     )
-    assert committed["requested_requests"] == 3
-    assert committed["completed_requests"] == 3
-    assert committed["failed_requests"] == 0
-    assert committed["not_attempted_requests"] == 0
+    assert settled["requested_requests"] == 3
+    assert settled["completed_requests"] == 2
+    assert settled["failed_requests"] == 0
+    assert settled["not_attempted_requests"] == 1
 
 
 @pytest.mark.asyncio
@@ -1131,7 +1149,7 @@ async def test_second_authentication_loss_pauses_for_human(tmp_path: Path) -> No
     assert result.action_required is not None
     assert result.action_required.type == "auth_required"
     assert adapters[Platform.BILIBILI].search_count == 1
-    assert adapters[Platform.XIAOHONGSHU].search_count == 1
+    assert adapters[Platform.XIAOHONGSHU].search_count == 0
 
 
 @pytest.mark.asyncio
@@ -1139,20 +1157,20 @@ async def test_rendered_search_challenge_pauses_for_human(tmp_path: Path) -> Non
     workspace, session_id = _create_session(
         tmp_path,
         max_videos=9,
-        add_xiaohongshu_query=True,
+        add_douyin_query=True,
     )
     adapters = {platform: _Platform(platform) for platform in PLATFORM_ORDER}
-    adapters[Platform.XIAOHONGSHU].search_failures.extend(
+    adapters[Platform.DOUYIN].search_failures.extend(
         [
             CollectorError(
                 "challenge_required",
                 "interactive verification required",
-                details={"platform": "xiaohongshu", "retryable": True},
+                details={"platform": "douyin", "retryable": True},
             ),
             CollectorError(
                 "challenge_required",
                 "verification still required",
-                details={"platform": "xiaohongshu", "retryable": True},
+                details={"platform": "douyin", "retryable": True},
             ),
         ]
     )
@@ -1169,7 +1187,7 @@ async def test_rendered_search_challenge_pauses_for_human(tmp_path: Path) -> Non
     assert result.status == "auth_required"
     assert result.action_required is not None
     assert result.action_required.type == "auth_required"
-    assert result.action_required.target == "xiaohongshu"
+    assert result.action_required.target == "douyin"
     assert sum(adapter.resolve_count for adapter in adapters.values()) == 0
     assert sum(adapter.fetch_count for adapter in adapters.values()) == 0
     settled = next(
@@ -1178,9 +1196,9 @@ async def test_rendered_search_challenge_pauses_for_human(tmp_path: Path) -> Non
         if event == "search_plan_settled"
     )
     assert settled["requested_requests"] == 4
-    assert settled["completed_requests"] == 2
+    assert settled["completed_requests"] == 1
     assert settled["failed_requests"] == 1
-    assert settled["not_attempted_requests"] == 1
+    assert settled["not_attempted_requests"] == 2
 
 
 @pytest.mark.asyncio
@@ -1229,7 +1247,7 @@ async def test_approved_manual_review_is_downloaded_on_resume_without_new_round(
 
     assert resumed.status == "integration_required"
     assert adapters[Platform.BILIBILI].fetch_count == 1
-    assert sum(adapter.search_count for adapter in adapters.values()) == 3
+    assert sum(adapter.search_count for adapter in adapters.values()) == 2
 
 
 @pytest.mark.asyncio

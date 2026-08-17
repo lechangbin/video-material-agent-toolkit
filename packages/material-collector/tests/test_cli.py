@@ -422,3 +422,123 @@ def test_console_entry_point_wraps_usage_errors_as_json() -> None:
     assert completed.returncode == 40
     payload = parse_single_json_line(completed.stdout)
     assert payload["error"]["code"] == "cli_usage_error"
+
+
+def test_cli_process_temporarily_skips_xiaohongshu_collection(
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "input.json"
+    plans_path = tmp_path / "plans.json"
+    probe_path = tmp_path / "adapter-calls.json"
+    workspace = tmp_path / "workspace"
+    write_json(input_path, collection_document())
+    write_json(plans_path, query_plan_document())
+    process_script = r'''
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path.cwd() / "tests"))
+import test_workflow as support
+from material_collector.adapters.cli import app as cli
+from material_collector.core.media import PLATFORM_ORDER
+
+probe_path, workspace, input_path, plans_path = map(Path, sys.argv[1:])
+authentication = support._Authentication()
+adapters = {platform: support._Platform(platform) for platform in PLATFORM_ORDER}
+
+def workflow_factory(*, progress):
+    return support._make_workflow(
+        authentication,
+        adapters,
+        support.SessionRuntime(lease_ttl_seconds=900),
+        progress=progress,
+    )
+
+cli._workflow = workflow_factory
+sys.argv = [
+    "material-collector",
+    "run",
+    "--workspace",
+    str(workspace),
+    "--input",
+    str(input_path),
+    "--query-plans",
+    str(plans_path),
+]
+return_code = cli.main()
+probe_path.write_text(
+    json.dumps(
+        {
+            "authentication": [
+                [platform.value for platform in call]
+                for call in authentication.ensure_calls
+            ],
+            "adapters": {
+                platform.value: {
+                    "search": adapter.search_count,
+                    "resolve": adapter.resolve_count,
+                    "fetch": adapter.fetch_count,
+                }
+                for platform, adapter in adapters.items()
+            },
+        }
+    ),
+    encoding="utf-8",
+)
+raise SystemExit(return_code)
+'''
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            process_script,
+            str(probe_path),
+            str(workspace),
+            str(input_path),
+            str(plans_path),
+        ],
+        cwd=Path(__file__).parents[1],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert completed.returncode == 20, completed.stderr
+    payload = parse_single_json_line(completed.stdout)
+    disabled = [
+        issue
+        for issue in payload["issues"]
+        if issue["code"] == "platform_search_temporarily_disabled"
+    ]
+    assert disabled == [
+        {
+            "stage": "search",
+            "code": "platform_search_temporarily_disabled",
+            "message": "Xiaohongshu collection search is temporarily disabled.",
+            "details": {
+                "platform": "xiaohongshu",
+                "temporary": True,
+                "reason": "authentication_probe_http_406",
+            },
+        }
+    ]
+    probe = json.loads(probe_path.read_text(encoding="utf-8"))
+    assert probe["authentication"] == [["bilibili", "douyin"]]
+    assert probe["adapters"]["bilibili"] == {
+        "search": 1,
+        "resolve": 1,
+        "fetch": 1,
+    }
+    assert probe["adapters"]["douyin"] == {
+        "search": 1,
+        "resolve": 1,
+        "fetch": 1,
+    }
+    assert probe["adapters"]["xiaohongshu"] == {
+        "search": 0,
+        "resolve": 0,
+        "fetch": 0,
+    }

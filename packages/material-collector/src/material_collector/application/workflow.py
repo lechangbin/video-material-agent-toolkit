@@ -69,6 +69,11 @@ WORKFLOW_STAGES: tuple[str, ...] = (
     "understand_and_ingest",
 )
 _AUTH_ACCESS_ERROR_CODES = frozenset({"authentication_lost", "challenge_required"})
+_COLLECTION_PLATFORM_ORDER: tuple[Platform, ...] = (
+    Platform.BILIBILI,
+    Platform.DOUYIN,
+)
+_TEMPORARILY_DISABLED_SEARCH_PLATFORMS = frozenset({Platform.XIAOHONGSHU})
 _OperationResult = TypeVar("_OperationResult")
 
 
@@ -318,7 +323,7 @@ class CollectionWorkflow:
             lease, probes = await self._await_with_lease_maintenance(
                 lease,
                 self._authentication.ensure_authenticated(
-                    PLATFORM_ORDER,
+                    _COLLECTION_PLATFORM_ORDER,
                     self._sessions.get_session(
                         lease.workspace,
                         lease.session_id,
@@ -368,7 +373,17 @@ class CollectionWorkflow:
             stage_key="search",
             operation_key=f"{lease.session_id}:search:v1",
         )
-        issues: list[WorkflowIssue] = []
+        disabled_issue = WorkflowIssue(
+            stage="search",
+            code="platform_search_temporarily_disabled",
+            message="Xiaohongshu collection search is temporarily disabled.",
+            details={
+                "platform": Platform.XIAOHONGSHU.value,
+                "temporary": True,
+                "reason": "authentication_probe_http_406",
+            },
+        )
+        issues: list[WorkflowIssue] = [disabled_issue]
         completed_batches = 0
         try:
             for plan in query_plans.plans:
@@ -398,6 +413,11 @@ class CollectionWorkflow:
                             text=query.text,
                         )
                         requests_by_platform[platform].append(request)
+                if any(
+                    requests_by_platform[platform]
+                    for platform in _TEMPORARILY_DISABLED_SEARCH_PLATFORMS
+                ):
+                    plan_issues.append(disabled_issue)
                 jobs = [
                     (
                         platform,
@@ -414,6 +434,7 @@ class CollectionWorkflow:
                     )
                     for platform, requests in requests_by_platform.items()
                     if requests
+                    and platform not in _TEMPORARILY_DISABLED_SEARCH_PLATFORMS
                 ]
                 lease, platform_results = await self._await_with_lease_maintenance(
                     lease,
