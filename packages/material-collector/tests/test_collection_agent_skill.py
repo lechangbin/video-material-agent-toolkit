@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -10,6 +11,9 @@ import pytest
 
 SKILL_ROOT = Path(__file__).parents[3] / "skills" / "collect-video-materials"
 RUNNER = SKILL_ROOT / "scripts" / "invoke-collector.ps1"
+POWERSHELL_HOSTS = [
+    host for host in ("powershell", "pwsh") if shutil.which(host) is not None
+]
 
 
 def test_skill_distinguishes_partial_search_progress_from_final_status() -> None:
@@ -21,10 +25,13 @@ def test_skill_distinguishes_partial_search_progress_from_final_status() -> None
     assert "Do not issue `resume` merely because one platform" in normalized
 
 
-def test_skill_runner_rejects_model_authored_operations() -> None:
+@pytest.mark.parametrize("powershell_host", POWERSHELL_HOSTS)
+def test_skill_runner_rejects_model_authored_operations(
+    powershell_host: str,
+) -> None:
     completed = subprocess.run(
         [
-            "pwsh",
+            powershell_host,
             "-NoProfile",
             "-File",
             str(RUNNER),
@@ -47,6 +54,15 @@ def test_skill_runner_rejects_model_authored_operations() -> None:
             "message": "Operation must be run, resume, status, or cancel.",
         },
     }
+
+
+def test_skill_runner_delegates_lifecycle_to_collector_executor() -> None:
+    source = RUNNER.read_text(encoding="utf-8")
+
+    assert "$arguments.Add('executor')" in source
+    assert "Start-Process" not in source
+    assert "Get-Process" not in source
+    assert "process_start_ticks" not in source
 
 
 @pytest.mark.parametrize(
@@ -124,8 +140,10 @@ def test_skill_runner_reports_missing_collector_as_structured_error(
     assert payload["error"]["code"] == "collector_not_found"
 
 
+@pytest.mark.parametrize("powershell_host", POWERSHELL_HOSTS)
 def test_skill_runner_starts_run_with_preserved_argument_boundaries(
     tmp_path: Path,
+    powershell_host: str,
 ) -> None:
     workspace = tmp_path / "素材 workspace"
     workspace.mkdir()
@@ -151,7 +169,7 @@ def test_skill_runner_starts_run_with_preserved_argument_boundaries(
 
     completed = subprocess.run(
         [
-            "pwsh",
+            powershell_host,
             "-NoProfile",
             "-File",
             str(RUNNER),

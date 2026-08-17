@@ -1,6 +1,28 @@
 # CLI execution contract
 
-## Runner
+## Cross-platform executor
+
+The lifecycle authority is the collector-owned executor. On hosts without PowerShell, invoke it
+directly:
+
+```text
+material-collector executor invoke \
+  --operation run \
+  --workspace <material-workspace> \
+  --input <collection-input.json> \
+  --query-plans <query-plans.json> \
+  --request-timeout-seconds 30 \
+  --progress-format jsonl \
+  --max-rounds 3 \
+  --max-videos 18
+```
+
+Use `--operation resume` with `--session-id`, and omit run-only inputs. Use `status` and `cancel`
+with `--workspace` and `--session-id`. The interface writes exactly one versioned JSON object to
+stdout and keeps stderr empty. Its start, duplicate-executor, monitoring, cancellation, and
+interrupted-recovery semantics are identical on Windows and non-Windows hosts.
+
+## Windows adapter
 
 Invoke the bundled runner with PowerShell splatting:
 
@@ -32,12 +54,13 @@ frozen collection boundary, and every initial or supplemental expression must us
 that complete scope. The runner and Collector must not authenticate or search a
 platform outside it.
 
-For monitoring and cancellation, invoke this same runner with `Operation="status"` or
+For monitoring and cancellation, invoke this same adapter with `Operation="status"` or
 `Operation="cancel"`, plus `Workspace` and `SessionId`. These operations remain synchronous and
-relay the CLI JSON and exit code; do not call the CLI around the runner.
+relay the executor JSON and exit code; do not call the CLI around the adapter.
 
-Do not add process-control statements around this call. The runner owns background execution,
-terminal suppression, PID validation, log paths, and duplicate-executor rejection.
+The adapter only translates its stable PowerShell parameters into the cross-platform executor
+interface. The collector owns background execution, terminal suppression, PID validation, log
+paths, and duplicate-executor rejection. Do not add process-control statements around this call.
 
 Every runner invocation writes exactly one versioned JSON object to stdout and keeps stderr
 empty, including parameter and startup errors.

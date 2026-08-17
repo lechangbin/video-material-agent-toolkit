@@ -38,6 +38,11 @@ from material_collector.infrastructure.assets import WorkspaceAssetStoreFactory
 from material_collector.infrastructure.authentication import (
     PlaywrightAuthenticationGateway,
 )
+from material_collector.infrastructure.executor import (
+    CollectionExecutor,
+    ExecutorFailure,
+    ExecutorInvocation,
+)
 from material_collector.infrastructure.media_inspection import (
     LocalMediaFingerprintService,
 )
@@ -71,11 +76,15 @@ review_app = typer.Typer(help="Inspect and decide long-video review items.")
 result_app = typer.Typer(help="Export the authoritative collection result.")
 media_app = typer.Typer(help="Fetch media assets on demand.")
 contracts_app = typer.Typer(help="Validate and normalize versioned input contracts.")
+executor_app = typer.Typer(
+    help="Start and control collector-owned background executions."
+)
 app.add_typer(auth_app, name="auth")
 app.add_typer(review_app, name="review")
 app.add_typer(result_app, name="result")
 app.add_typer(media_app, name="media")
 app.add_typer(contracts_app, name="contracts")
+app.add_typer(executor_app, name="executor")
 
 
 class ProgressFormat(StrEnum):
@@ -174,7 +183,7 @@ def _json_text(value: BaseModel | dict[str, Any]) -> str:
     )
     return json.dumps(
         payload,
-        ensure_ascii=False,
+        ensure_ascii=True,
         sort_keys=True,
         separators=(",", ":"),
     )
@@ -319,6 +328,84 @@ def _read_json_contract(path: Path, document: str) -> Any:
             f"{document} must be readable UTF-8 JSON.",
             details={"document": document},
         ) from error
+
+
+@executor_app.command("invoke")
+def executor_invoke_command(
+    operation: Annotated[
+        str | None,
+        typer.Option("--operation", help="run, resume, status, or cancel."),
+    ] = None,
+    collector_path: Annotated[
+        str | None,
+        typer.Option(
+            "--collector-path",
+            help="Collector executable; defaults to this Python environment.",
+        ),
+    ] = None,
+    workspace: Annotated[
+        str | None,
+        typer.Option("--workspace", help="Persistent material workspace."),
+    ] = None,
+    input_path: Annotated[
+        str | None,
+        typer.Option("--input", help="Collection input JSON for run."),
+    ] = None,
+    query_plans_path: Annotated[
+        str | None,
+        typer.Option("--query-plans", help="QueryPlan JSON for run."),
+    ] = None,
+    session_id: Annotated[
+        str | None,
+        typer.Option("--session-id", help="Existing session for resume/status/cancel."),
+    ] = None,
+    request_timeout_seconds: Annotated[
+        str,
+        typer.Option("--request-timeout-seconds"),
+    ] = "30",
+    max_rounds: Annotated[str, typer.Option("--max-rounds")] = "3",
+    max_videos: Annotated[str, typer.Option("--max-videos")] = "18",
+    progress_format: Annotated[str, typer.Option("--progress-format")] = "jsonl",
+    control_directory: Annotated[
+        str | None,
+        typer.Option("--control-directory", help="Override executor artifact directory."),
+    ] = None,
+) -> None:
+    """Invoke the cross-platform executor through its stable Agent contract."""
+
+    invocation = ExecutorInvocation(
+        operation=operation,
+        collector_path=collector_path,
+        workspace=workspace,
+        input_path=input_path,
+        query_plans_path=query_plans_path,
+        session_id=session_id,
+        request_timeout_seconds=request_timeout_seconds,
+        max_rounds=max_rounds,
+        max_videos=max_videos,
+        progress_format=progress_format,
+        control_directory=control_directory,
+    )
+    try:
+        result = CollectionExecutor().invoke(invocation)
+    except ExecutorFailure as error:
+        _emit_final(error.payload())
+        raise typer.Exit(error.exit_code) from error
+    except Exception as error:  # pragma: no cover - last-resort executor containment
+        _emit_final(
+            {
+                "schema_version": "1.0",
+                "status": "error",
+                "error": {
+                    "code": "internal_error",
+                    "message": "An unexpected executor error occurred.",
+                },
+            }
+        )
+        raise typer.Exit(50) from error
+    _emit_final(result.payload)
+    if result.exit_code:
+        raise typer.Exit(result.exit_code)
 
 
 @contracts_app.command("normalize")

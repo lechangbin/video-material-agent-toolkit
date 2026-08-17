@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -91,6 +93,104 @@ def parse_single_json_line(output: str) -> dict[str, Any]:
     parsed = json.loads(lines[0])
     assert isinstance(parsed, dict)
     return parsed
+
+
+def terminate_execution(payload: dict[str, Any]) -> None:
+    process_ids = [payload.get("process_id"), payload.get("collector_process_id")]
+    if sys.platform == "win32":
+        for process_id in process_ids:
+            if isinstance(process_id, int):
+                subprocess.run(
+                    ["taskkill", "/PID", str(process_id), "/T", "/F"],
+                    check=False,
+                    capture_output=True,
+                )
+        return
+    for process_id in process_ids:
+        if isinstance(process_id, int):
+            try:
+                os.kill(process_id, 15)
+            except ProcessLookupError:
+                pass
+
+
+def test_executor_cli_starts_collection_without_powershell(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    input_path = tmp_path / "input.json"
+    plans_path = tmp_path / "plans.json"
+    write_json(input_path, collection_document())
+    write_json(plans_path, query_plan_document())
+    captured_args = tmp_path / "captured-args.json"
+    fake_collector = tmp_path / "fake_collector.py"
+    fake_collector.write_text(
+        "import json, os, sys, time\n"
+        "from pathlib import Path\n"
+        "Path(os.environ['FAKE_ARGS_PATH']).write_text("
+        "json.dumps(sys.argv[1:]), encoding='utf-8')\n"
+        "print(json.dumps({'event': 'session_started', "
+        "'session_id': 'ses_cross_platform'}), file=sys.stderr, flush=True)\n"
+        "time.sleep(10)\n",
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "material_collector.adapters.cli.app",
+            "executor",
+            "invoke",
+            "--operation",
+            "run",
+            "--collector-path",
+            str(fake_collector),
+            "--workspace",
+            str(workspace),
+            "--input",
+            str(input_path),
+            "--query-plans",
+            str(plans_path),
+            "--control-directory",
+            str(tmp_path / "control"),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={**os.environ, "FAKE_ARGS_PATH": str(captured_args)},
+    )
+
+    assert completed.returncode == 0, completed.stdout
+    payload = parse_single_json_line(completed.stdout)
+    try:
+        assert completed.stderr == ""
+        assert payload["status"] == "started"
+        assert payload["operation"] == "run"
+        assert payload["session_id"] == "ses_cross_platform"
+        assert payload["process_id"] != payload["collector_process_id"]
+        deadline = time.monotonic() + 3
+        while not captured_args.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert json.loads(captured_args.read_text(encoding="utf-8")) == [
+            "run",
+            "--workspace",
+            str(workspace),
+            "--input",
+            str(input_path),
+            "--query-plans",
+            str(plans_path),
+            "--request-timeout-seconds",
+            "30",
+            "--max-rounds",
+            "3",
+            "--max-videos",
+            "18",
+            "--progress-format",
+            "jsonl",
+        ]
+    finally:
+        terminate_execution(payload)
 
 
 def test_long_running_commands_expose_progress_format_options() -> None:

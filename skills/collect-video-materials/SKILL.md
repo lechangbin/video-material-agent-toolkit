@@ -14,16 +14,19 @@ PowerShell launcher.
 2. Validate that the workspace and versioned JSON inputs are explicit. QueryPlans must use
    schema 2.0, declare one non-empty `platform_scope`, and copy that complete scope into every
    expression's `target_platforms`.
-3. Invoke `scripts/invoke-collector.ps1` for every `run`, `resume`, `status`, or `cancel`.
-4. Pass values only through the script parameters. Do not edit, copy, inline, or reimplement the
-   script.
+3. On Windows, invoke `scripts/invoke-collector.ps1` for every `run`, `resume`, `status`, or
+   `cancel`. On non-Windows hosts, invoke `material-collector executor invoke` with the matching
+   documented options; PowerShell is not required.
+4. Pass values only through the documented adapter or executor parameters. Do not edit, copy,
+   inline, or reimplement either interface.
 5. For a successfully started `run` or `resume`, persist the returned `control_path`,
    `process_id`, `collector_process_id`, `session_id`, `stdout_path`, and `stderr_path` in the
    current Agent task.
    `status` and `cancel` instead relay the CLI result and do not create an executor record.
 
-Do not use `Start-Process`, PowerShell Jobs, scheduled tasks, Bash continuations, or a second
-terminal command to replace the bundled runner.
+The collector-owned executor, not the Skill script, owns locks, process creation, handshakes,
+logs, and recovery checks. Do not use `Start-Process`, PowerShell Jobs, scheduled tasks, Bash
+continuations, or a second terminal command to replace it.
 
 ## Monitor
 
