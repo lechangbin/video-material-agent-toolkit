@@ -22,6 +22,7 @@ from material_collector.application.sessions import (
     CreateSessionRequest,
     SessionApplication,
 )
+from material_collector.core.errors import SessionVersionError
 from material_collector.infrastructure.session_runtime_store import (
     SqliteSessionRuntime as SessionRuntime,
 )
@@ -67,7 +68,8 @@ def _create_session(tmp_path: Path, session_id: str = "ses_runtime_001") -> tupl
     _write_json(
         plans_path,
         {
-            "schema_version": "1.0",
+            "schema_version": "2.0",
+            "platform_scope": ["bilibili", "douyin", "xiaohongshu"],
             "plans": [
                 {
                     "segment_id": "seg_a",
@@ -527,7 +529,7 @@ def test_legacy_initialized_database_is_migrated_on_first_execution(
         assert connection.execute("PRAGMA user_version").fetchone()[0] == SESSION_SCHEMA_VERSION
 
 
-def test_v1_base_session_is_migrated_before_runtime_execution(tmp_path: Path) -> None:
+def test_v1_base_session_is_rejected_before_runtime_execution(tmp_path: Path) -> None:
     workspace, session_id = _create_session(tmp_path)
     database = workspace / ".material-collector" / "sessions" / session_id / "session.sqlite3"
     with sqlite3.connect(database) as connection:
@@ -536,27 +538,23 @@ def test_v1_base_session_is_migrated_before_runtime_execution(tmp_path: Path) ->
         connection.execute("PRAGMA user_version = 1")
         connection.commit()
 
-    lease = SessionRuntime().begin_execution(
-        workspace,
-        session_id,
-        owner_id="worker-a",
-        stages=("search",),
-    )
+    with pytest.raises(SessionVersionError) as captured:
+        SessionRuntime().begin_execution(
+            workspace,
+            session_id,
+            owner_id="worker-a",
+            stages=("search",),
+        )
 
-    assert lease.next_stage == "search"
+    assert captured.value.details == {
+        "session_id": session_id,
+        "received_version": 1,
+        "supported_versions": [SESSION_SCHEMA_VERSION],
+    }
     with sqlite3.connect(database) as connection:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(session_state)")}
-        assert "request_timeout_seconds" in columns
-        row = connection.execute(
-            """
-            SELECT request_timeout_seconds
-            FROM session_state
-            WHERE session_id = ?
-            """,
-            (session_id,),
-        ).fetchone()
-        assert row == (30,)
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert "request_timeout_seconds" not in columns
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
 
 
 def test_legacy_workflow_plan_inserts_fingerprint_before_understanding(

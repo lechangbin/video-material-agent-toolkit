@@ -30,11 +30,7 @@ Agent 将根据 Top-K 选择结果判断素材缺口，需要补搜时生成下�
     {
       "query_id": "query_round_2_001",
       "text": "针对缺口生成的新检索表达",
-      "target_platforms": [
-        "bilibili",
-        "douyin",
-        "xiaohongshu"
-      ],
+      "target_platforms": ["bilibili"],
       "facet_ids": [
         "facet_001"
       ]
@@ -56,7 +52,7 @@ Agent 将根据 Top-K 选择结果判断素材缺口，需要补搜时生成下�
 - `sufficient` 要求所有视觉面向为 `covered`，并同时通过核心充分性护栏；Agent 不能降低确定性阈值。
 - `search_more` 要求至少一个视觉面向为 `missing`，并提供针对缺失面向的 `next_queries`。
 - 下一轮检索表达只能引用本次 `missing` 的 `facet_id`。
-- 下一轮检索表达合计仍须覆盖 Bilibili、抖音和小红书，并遵循 QueryPlan 的标准化和去重规则。
+- 下一轮每条检索表达必须与冻结的 `platform_scope` 完全一致，并遵循 QueryPlan 的标准化和去重规则。
 - Agent 判断需要继续但 `max_rounds`、`max_videos` 或平台期规则已经触发时，核心保存本次缺口并以 `stopped_with_gaps` 结束，不执行查询。
 
 ## 并发与幂等

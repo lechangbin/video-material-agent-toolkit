@@ -11,7 +11,9 @@ PowerShell launcher.
 ## Invoke
 
 1. Read [references/cli-execution-contract.md](references/cli-execution-contract.md).
-2. Validate that the workspace and versioned JSON inputs are explicit.
+2. Validate that the workspace and versioned JSON inputs are explicit. QueryPlans must use
+   schema 2.0, declare one non-empty `platform_scope`, and copy that complete scope into every
+   expression's `target_platforms`.
 3. Invoke `scripts/invoke-collector.ps1` for every `run`, `resume`, `status`, or `cancel`.
 4. Pass values only through the script parameters. Do not edit, copy, inline, or reimplement the
    script.

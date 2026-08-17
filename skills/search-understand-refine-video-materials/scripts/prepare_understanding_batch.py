@@ -11,9 +11,10 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-BATCH_SCHEMA = "video-material-understanding-batch/v1"
-COLLECTION_SCHEMA = "1.0"
+BATCH_SCHEMA = "video-material-understanding-batch/v2"
+COLLECTION_SCHEMA = "2.0"
 WORKFLOW_SCHEMA = "video-material-workflow/v1"
+PLATFORMS = ("bilibili", "douyin", "xiaohongshu")
 
 
 class BatchError(RuntimeError):
@@ -103,6 +104,7 @@ def build_batch(
     workflow_state_version: int,
     segment_id: str,
     query_plan_id: str,
+    platform_scope: list[str],
     material_workspace: Path,
     semvideo_workspace: Path,
 ) -> dict[str, Any]:
@@ -117,6 +119,15 @@ def build_batch(
         or not query_plan_id
     ):
         raise BatchError("workflow lineage is invalid")
+    normalized_workflow_scope = [
+        platform for platform in PLATFORMS if platform in platform_scope
+    ]
+    if (
+        not platform_scope
+        or platform_scope != normalized_workflow_scope
+        or len(platform_scope) != len(set(platform_scope))
+    ):
+        raise BatchError("workflow platform scope is invalid")
     material_workspace = material_workspace.expanduser().resolve(strict=True)
     semvideo_workspace = semvideo_workspace.expanduser().resolve(strict=True)
     if not material_workspace.is_dir() or not semvideo_workspace.is_dir():
@@ -132,6 +143,21 @@ def build_batch(
         manifest = _load_object(path)
         if manifest.get("schema_version") != COLLECTION_SCHEMA:
             raise BatchError(f"unsupported collector schema: {path}")
+        platform_scope = manifest.get("platform_scope")
+        normalized_scope = [
+            platform for platform in PLATFORMS if platform in (platform_scope or [])
+        ]
+        if (
+            not isinstance(platform_scope, list)
+            or not platform_scope
+            or platform_scope != normalized_scope
+            or len(platform_scope) != len(set(platform_scope))
+        ):
+            raise BatchError("collection result platform scope is invalid")
+        if platform_scope != normalized_workflow_scope:
+            raise BatchError(
+                "collection result platform scope does not match the workflow"
+            )
         if not isinstance(manifest.get("session_id"), str):
             raise BatchError("collection result is missing session_id")
         if not isinstance(manifest.get("state_version"), int):
@@ -158,6 +184,10 @@ def build_batch(
         for candidate in candidates:
             if not isinstance(candidate, dict):
                 raise BatchError("candidate entries must be objects")
+            if candidate.get("platform") not in normalized_workflow_scope:
+                raise BatchError(
+                    "collection candidate is outside the workflow platform scope"
+                )
             media_units = candidate.get("media_units")
             if not isinstance(media_units, list):
                 raise BatchError("candidate.media_units must be an array")
@@ -233,6 +263,7 @@ def build_batch(
         "workflow_state_version": workflow_state_version,
         "segment_id": segment_id,
         "query_plan_id": query_plan_id,
+        "platform_scope": normalized_workflow_scope,
         "material_workspace": str(material_workspace),
         "semvideo_workspace": str(semvideo_workspace),
         "profile": profile,
@@ -289,15 +320,21 @@ def _workflow_lineage(
     workflow: dict[str, Any],
     segment_id: str,
     profile: str,
-) -> tuple[str, int, str]:
+) -> tuple[str, int, str, list[str]]:
     if workflow.get("schema_version") != WORKFLOW_SCHEMA:
         raise BatchError("workflow schema is unsupported")
     workflow_id = workflow.get("workflow_id")
     state_version = workflow.get("state_version")
+    platform_scope = workflow.get("platform_scope")
     plans = workflow.get("plans")
     if (
         not isinstance(workflow_id, str)
         or not isinstance(state_version, int)
+        or not isinstance(platform_scope, list)
+        or not platform_scope
+        or platform_scope
+        != [platform for platform in PLATFORMS if platform in platform_scope]
+        or len(platform_scope) != len(set(platform_scope))
         or not isinstance(plans, list)
     ):
         raise BatchError("workflow identity is invalid")
@@ -313,14 +350,14 @@ def _workflow_lineage(
     )
     if plan is None or not isinstance(plan.get("query_plan_id"), str):
         raise BatchError("workflow does not contain the requested segment")
-    return workflow_id, state_version, plan["query_plan_id"]
+    return workflow_id, state_version, plan["query_plan_id"], platform_scope
 
 
 def main(argv: list[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
     try:
         workflow = _load_object(Path(arguments.workflow).resolve(strict=True))
-        workflow_id, state_version, query_plan_id = _workflow_lineage(
+        workflow_id, state_version, query_plan_id, platform_scope = _workflow_lineage(
             workflow,
             arguments.segment_id,
             arguments.profile,
@@ -332,6 +369,7 @@ def main(argv: list[str] | None = None) -> int:
             workflow_state_version=state_version,
             segment_id=arguments.segment_id,
             query_plan_id=query_plan_id,
+            platform_scope=platform_scope,
             material_workspace=Path(workflow["material_workspace"]),
             semvideo_workspace=Path(workflow["semvideo_workspace"]),
         )

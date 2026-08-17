@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -21,6 +22,7 @@ from material_collector.application.workflow import (
     WorkflowResult,
     WorkflowSegmentSummary,
 )
+from material_collector.core.media import Platform
 from material_collector.infrastructure.session_runtime_store import SqliteSessionRuntime
 from material_collector.infrastructure.session_store import SqliteSessionStore
 
@@ -39,7 +41,8 @@ def collection_document() -> dict[str, Any]:
 
 def query_plan_document() -> dict[str, Any]:
     return {
-        "schema_version": "1.0",
+        "schema_version": "2.0",
+        "platform_scope": ["bilibili", "douyin", "xiaohongshu"],
         "plans": [
             {
                 "segment_id": "seg_001",
@@ -62,6 +65,18 @@ def query_plan_document() -> dict[str, Any]:
             }
         ],
     }
+
+
+def scoped_query_plan_document(
+    *platform_scope: str,
+) -> dict[str, Any]:
+    plans = query_plan_document()
+    plans["schema_version"] = "2.0"
+    plans["platform_scope"] = list(platform_scope)
+    for plan in plans["plans"]:
+        for query in plan["initial_queries"]:
+            query["target_platforms"] = list(platform_scope)
+    return plans
 
 
 def parse_single_json_line(output: str) -> dict[str, Any]:
@@ -116,6 +131,234 @@ def test_contracts_normalize_uses_the_session_creation_contracts(
     assert payload["query_plans"]["plans"][0]["query_plan_id"] == "qp_seg_001"
 
 
+def test_contracts_normalize_freezes_a_bilibili_only_platform_scope(
+    tmp_path: Path,
+) -> None:
+    runner = CliRunner()
+    input_path = tmp_path / "input.json"
+    plans_path = tmp_path / "plans.json"
+    plans = scoped_query_plan_document("bilibili")
+    write_json(input_path, collection_document())
+    write_json(plans_path, plans)
+
+    result = runner.invoke(
+        app,
+        [
+            "contracts",
+            "normalize",
+            "--input",
+            str(input_path),
+            "--query-plans",
+            str(plans_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    payload = parse_single_json_line(result.stdout)
+    assert payload["query_plans"]["schema_version"] == "2.0"
+    assert payload["query_plans"]["platform_scope"] == ["bilibili"]
+    assert payload["query_plans"]["plans"][0]["initial_queries"][0][
+        "target_platforms"
+    ] == ["bilibili"]
+
+
+def test_contracts_normalize_canonicalizes_a_supported_platform_subset(
+    tmp_path: Path,
+) -> None:
+    runner = CliRunner()
+    input_path = tmp_path / "input.json"
+    plans_path = tmp_path / "plans.json"
+    write_json(input_path, collection_document())
+    write_json(
+        plans_path,
+        scoped_query_plan_document("xiaohongshu", "bilibili"),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "contracts",
+            "normalize",
+            "--input",
+            str(input_path),
+            "--query-plans",
+            str(plans_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    payload = parse_single_json_line(result.stdout)
+    assert payload["query_plans"]["platform_scope"] == [
+        "bilibili",
+        "xiaohongshu",
+    ]
+    assert payload["query_plans"]["plans"][0]["initial_queries"][0][
+        "target_platforms"
+    ] == ["bilibili", "xiaohongshu"]
+
+
+def test_run_and_status_preserve_a_bilibili_only_platform_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = CliRunner()
+    workspace = tmp_path / "workspace"
+    input_path = tmp_path / "input.json"
+    plans_path = tmp_path / "plans.json"
+    write_json(input_path, collection_document())
+    write_json(plans_path, scoped_query_plan_document("bilibili"))
+
+    class FakeWorkflow:
+        async def run(self, workspace: Path, session_id: str) -> WorkflowResult:
+            return WorkflowResult(
+                session_id=session_id,
+                workspace_path=str(workspace.resolve()),
+                platform_scope=(Platform.BILIBILI,),
+                status="completed",
+                result_path=str(workspace / "collection-result.json"),
+                candidates_found=0,
+                media_units_found=0,
+                proxies_ready=0,
+                issues=(),
+                action_required=None,
+            )
+
+    monkeypatch.setattr(cli_module, "_workflow", lambda **_kwargs: FakeWorkflow())
+    run_result = runner.invoke(
+        app,
+        [
+            "run",
+            "--workspace",
+            str(workspace),
+            "--input",
+            str(input_path),
+            "--query-plans",
+            str(plans_path),
+        ],
+    )
+
+    assert run_result.exit_code == 0, run_result.stdout
+    run_payload = parse_single_json_line(run_result.stdout)
+    assert run_payload["platform_scope"] == ["bilibili"]
+
+    status_result = runner.invoke(
+        app,
+        [
+            "status",
+            "--workspace",
+            str(workspace),
+            "--session-id",
+            run_payload["session_id"],
+        ],
+    )
+
+    assert status_result.exit_code == 0, status_result.stdout
+    status_payload = parse_single_json_line(status_result.stdout)
+    assert status_payload["platform_scope"] == ["bilibili"]
+    frozen_plans = json.loads(
+        (workspace / status_payload["query_plans_snapshot_path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert frozen_plans["platform_scope"] == ["bilibili"]
+
+
+def test_status_rejects_an_old_session_without_mutating_it(
+    tmp_path: Path,
+) -> None:
+    runner = CliRunner()
+    workspace = tmp_path / "workspace"
+    input_path = tmp_path / "input.json"
+    plans_path = tmp_path / "plans.json"
+    write_json(input_path, collection_document())
+    write_json(plans_path, scoped_query_plan_document("bilibili"))
+    session = SessionApplication(store=SqliteSessionStore()).create_session(
+        CreateSessionRequest(
+            workspace=workspace,
+            input_path=input_path,
+            query_plans_path=plans_path,
+        )
+    )
+    database = (
+        workspace
+        / ".material-collector"
+        / "sessions"
+        / session.session_id
+        / "session.sqlite3"
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE schema_info SET schema_version = 2 WHERE singleton = 1"
+        )
+        connection.execute("PRAGMA user_version = 2")
+
+    result = runner.invoke(
+        app,
+        [
+            "status",
+            "--workspace",
+            str(workspace),
+            "--session-id",
+            session.session_id,
+        ],
+    )
+
+    assert result.exit_code == 50
+    payload = parse_single_json_line(result.stdout)
+    assert payload["error"] == {
+        "code": "session_version_unsupported",
+        "message": "The collection session schema version is unsupported.",
+        "details": {
+            "session_id": session.session_id,
+            "received_version": 2,
+            "supported_versions": [3],
+        },
+    }
+    assert database.is_file()
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT schema_version FROM schema_info WHERE singleton = 1"
+        ).fetchone()[0] == 2
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+
+
+def test_contracts_normalize_rejects_queryplans_v1_as_unsupported(
+    tmp_path: Path,
+) -> None:
+    runner = CliRunner()
+    input_path = tmp_path / "input.json"
+    plans_path = tmp_path / "plans.json"
+    write_json(input_path, collection_document())
+    plans = query_plan_document()
+    plans["schema_version"] = "1.0"
+    plans.pop("platform_scope")
+    write_json(plans_path, plans)
+
+    result = runner.invoke(
+        app,
+        [
+            "contracts",
+            "normalize",
+            "--input",
+            str(input_path),
+            "--query-plans",
+            str(plans_path),
+        ],
+    )
+
+    assert result.exit_code == 40
+    payload = parse_single_json_line(result.stdout)
+    assert payload["error"] == {
+        "code": "contract_version_unsupported",
+        "message": "query_plans schema version is unsupported.",
+        "details": {
+            "document": "query_plans",
+            "received_version": "1.0",
+            "supported_versions": ["2.0"],
+        },
+    }
+
+
 def test_contracts_normalize_rejects_invalid_json_with_machine_protocol(
     tmp_path: Path,
 ) -> None:
@@ -162,6 +405,7 @@ def test_run_can_render_human_readable_progress_without_polluting_stdout(
             return WorkflowResult(
                 session_id=session_id,
                 workspace_path=str(workspace.resolve()),
+                platform_scope=tuple(Platform),
                 status="completed",
                 result_path=str(workspace / "collection-result.json"),
                 candidates_found=1,
@@ -222,6 +466,7 @@ def test_run_status_and_sessions_list_share_the_application_module(
             return WorkflowResult(
                 session_id=session_id,
                 workspace_path=str(workspace.resolve()),
+                platform_scope=tuple(Platform),
                 status="integration_required",
                 result_path=str(result_path),
                 candidates_found=3,
@@ -422,3 +667,107 @@ def test_console_entry_point_wraps_usage_errors_as_json() -> None:
     assert completed.returncode == 40
     payload = parse_single_json_line(completed.stdout)
     assert payload["error"]["code"] == "cli_usage_error"
+
+
+def test_cli_process_never_contacts_adapters_outside_bilibili_scope(
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "input.json"
+    plans_path = tmp_path / "plans.json"
+    probe_path = tmp_path / "adapter-calls.json"
+    workspace = tmp_path / "workspace"
+    write_json(input_path, collection_document())
+    write_json(plans_path, scoped_query_plan_document("bilibili"))
+    process_script = r'''
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path.cwd() / "tests"))
+import test_workflow as support
+from material_collector.adapters.cli import app as cli
+from material_collector.core.media import PLATFORM_ORDER
+
+probe_path, workspace, input_path, plans_path = map(Path, sys.argv[1:])
+authentication = support._Authentication()
+adapters = {platform: support._Platform(platform) for platform in PLATFORM_ORDER}
+
+def workflow_factory(*, progress):
+    return support._make_workflow(
+        authentication,
+        adapters,
+        support.SessionRuntime(lease_ttl_seconds=900),
+        progress=progress,
+    )
+
+cli._workflow = workflow_factory
+sys.argv = [
+    "material-collector",
+    "run",
+    "--workspace",
+    str(workspace),
+    "--input",
+    str(input_path),
+    "--query-plans",
+    str(plans_path),
+]
+return_code = cli.main()
+probe_path.write_text(
+    json.dumps(
+        {
+            "authentication": [
+                [platform.value for platform in call]
+                for call in authentication.ensure_calls
+            ],
+            "adapters": {
+                platform.value: {
+                    "search": adapter.search_count,
+                    "resolve": adapter.resolve_count,
+                    "fetch": adapter.fetch_count,
+                }
+                for platform, adapter in adapters.items()
+            },
+        }
+    ),
+    encoding="utf-8",
+)
+raise SystemExit(return_code)
+'''
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            process_script,
+            str(probe_path),
+            str(workspace),
+            str(input_path),
+            str(plans_path),
+        ],
+        cwd=Path(__file__).parents[1],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert completed.returncode == 20, completed.stderr
+    payload = parse_single_json_line(completed.stdout)
+    assert payload["platform_scope"] == ["bilibili"]
+    probe = json.loads(probe_path.read_text(encoding="utf-8"))
+    assert probe["authentication"] == [["bilibili"]]
+    assert probe["adapters"]["bilibili"] == {
+        "search": 1,
+        "resolve": 1,
+        "fetch": 1,
+    }
+    assert probe["adapters"]["douyin"] == {
+        "search": 0,
+        "resolve": 0,
+        "fetch": 0,
+    }
+    assert probe["adapters"]["xiaohongshu"] == {
+        "search": 0,
+        "resolve": 0,
+        "fetch": 0,
+    }

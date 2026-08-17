@@ -28,6 +28,7 @@ from material_collector.core.contracts import normalize_contracts
 from material_collector.core.errors import (
     CollectorError,
     ContractError,
+    ContractVersionError,
     SessionNotFoundError,
     SessionStateError,
     WorkspaceError,
@@ -188,7 +189,10 @@ def _emit_diagnostic(event: dict[str, Any]) -> None:
 
 
 def _exit_code_for(error: CollectorError) -> int:
-    if isinstance(error, (ContractError, SessionNotFoundError, WorkspaceError)):
+    if isinstance(
+        error,
+        (ContractError, ContractVersionError, SessionNotFoundError, WorkspaceError),
+    ):
         return 40
     if error.details.get("retryable") is True:
         return 30
@@ -390,7 +394,7 @@ def run_command(
             file_okay=True,
             dir_okay=False,
             readable=True,
-            help="UTF-8 JSON QueryPlan document using schema version 1.0.",
+            help="UTF-8 JSON QueryPlan document using schema version 2.0.",
         ),
     ],
     max_rounds: Annotated[

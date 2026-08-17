@@ -1,4 +1,9 @@
 {
+  "platform_scope": [
+    "bilibili",
+    "douyin",
+    "xiaohongshu"
+  ],
   "plans": [
     {
       "initial_queries": [
@@ -51,5 +56,5 @@
       "visual_strategy": "以连续移动的人群和交通展示城市流动感。"
     }
   ],
-  "schema_version": "1.0"
+  "schema_version": "2.0"
 }

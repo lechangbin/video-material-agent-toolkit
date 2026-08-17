@@ -11,7 +11,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-BATCH_SCHEMA = "video-material-understanding-batch/v1"
+BATCH_SCHEMA = "video-material-understanding-batch/v2"
 JOBS_SCHEMA = "video-material-understanding-jobs/v1"
 
 

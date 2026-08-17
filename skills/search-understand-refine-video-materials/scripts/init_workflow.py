@@ -20,6 +20,17 @@ PLATFORMS = ("bilibili", "douyin", "xiaohongshu")
 class WorkflowInitError(RuntimeError):
     """The semantic input cannot define a safe workflow."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "workflow_initialization_invalid",
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.details = dict(details or {})
+
 
 def _load_object(path: Path) -> dict[str, Any]:
     try:
@@ -52,12 +63,16 @@ def _normalize_in_process(
     raw_plans: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     from material_collector.core.contracts import normalize_contracts
-    from material_collector.core.errors import ContractError
+    from material_collector.core.errors import CollectorError
 
     try:
         normalized = normalize_contracts(raw_input, raw_plans)
-    except ContractError as error:
-        raise WorkflowInitError(error.message) from error
+    except CollectorError as error:
+        raise WorkflowInitError(
+            error.message,
+            code=error.code,
+            details=error.details,
+        ) from error
     return (
         normalized.collection_input.model_dump(mode="json", exclude_none=False),
         normalized.query_plans.model_dump(mode="json", exclude_none=False),
@@ -101,7 +116,12 @@ def _normalize_with_collector(
         error = payload.get("error")
         code = error.get("code") if isinstance(error, dict) else "unknown"
         message = error.get("message") if isinstance(error, dict) else "invalid contracts"
-        raise WorkflowInitError(f"Collector rejected input ({code}): {message}")
+        details = error.get("details") if isinstance(error, dict) else None
+        raise WorkflowInitError(
+            message,
+            code=code if isinstance(code, str) else "collector_contract_rejected",
+            details=details if isinstance(details, dict) else {},
+        )
     if (
         payload.get("schema_version")
         != "material-collector-normalized-contracts/v1"
@@ -116,11 +136,22 @@ def _normalize_with_collector(
 def _validate_orchestration_contracts(
     collection_input: dict[str, Any],
     query_plans: dict[str, Any],
-) -> list[dict[str, str]]:
+) -> tuple[list[str], list[dict[str, str]]]:
     segments = collection_input.get("segments")
     plans = query_plans.get("plans")
-    if not isinstance(segments, list) or not isinstance(plans, list):
+    platform_scope = query_plans.get("platform_scope")
+    if (
+        not isinstance(segments, list)
+        or not isinstance(plans, list)
+        or not isinstance(platform_scope, list)
+        or not platform_scope
+        or len(platform_scope) != len(set(platform_scope))
+        or not set(platform_scope).issubset(PLATFORMS)
+    ):
         raise WorkflowInitError("normalized Collector contracts are malformed")
+    normalized_scope = [
+        platform for platform in PLATFORMS if platform in platform_scope
+    ]
     segment_ids = [segment["segment_id"] for segment in segments]
     plan_refs: list[dict[str, str]] = []
     for plan in plans:
@@ -131,11 +162,10 @@ def _validate_orchestration_contracts(
             targets = query.get("target_platforms") if isinstance(query, dict) else None
             if (
                 not isinstance(targets, list)
-                or set(targets) != set(PLATFORMS)
-                or len(targets) != len(PLATFORMS)
+                or targets != normalized_scope
             ):
                 raise WorkflowInitError(
-                    "every query expression must target all phase-one platforms"
+                    "every query expression must target the complete platform scope"
                 )
         plan_refs.append(
             {
@@ -144,7 +174,7 @@ def _validate_orchestration_contracts(
             }
         )
     plan_refs.sort(key=lambda item: segment_ids.index(item["segment_id"]))
-    return plan_refs
+    return normalized_scope, plan_refs
 
 
 def _write_once(path: Path, content: bytes) -> None:
@@ -207,7 +237,7 @@ def initialize(
             resolved_plans,
             normalizer_timeout_seconds,
         )
-    plan_refs = _validate_orchestration_contracts(
+    platform_scope, plan_refs = _validate_orchestration_contracts(
         collection_input,
         query_plans,
     )
@@ -235,6 +265,7 @@ def initialize(
         "workflow_id": workflow_id,
         "state_version": 1,
         "status": "active",
+        "platform_scope": platform_scope,
         "material_workspace": str(material_workspace),
         "semvideo_workspace": str(semvideo_workspace),
         "semvideo_profile": semvideo_profile,
@@ -311,13 +342,20 @@ def main(argv: list[str] | None = None) -> int:
             / "workflow.json"
         )
     except (WorkflowInitError, OSError, ValueError) as error:
+        code = (
+            error.code
+            if isinstance(error, WorkflowInitError)
+            else "workflow_initialization_invalid"
+        )
+        details = error.details if isinstance(error, WorkflowInitError) else {}
         print(
             json.dumps(
                 {
                     "schema_version": WORKFLOW_SCHEMA,
                     "status": "error",
-                    "code": "workflow_initialization_invalid",
+                    "code": code,
                     "message": str(error),
+                    "details": details,
                 },
                 ensure_ascii=False,
             ),

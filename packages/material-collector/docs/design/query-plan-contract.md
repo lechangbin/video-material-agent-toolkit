@@ -8,7 +8,10 @@
 
 ```json
 {
-  "schema_version": "1.0",
+  "schema_version": "2.0",
+  "platform_scope": [
+    "bilibili"
+  ],
   "plans": [
     {
       "query_plan_id": "qp_seg_001",
@@ -25,9 +28,7 @@
           "query_id": "query_001",
           "text": "具体检索表达",
           "target_platforms": [
-            "bilibili",
-            "douyin",
-            "xiaohongshu"
+            "bilibili"
           ],
           "facet_ids": [
             "facet_001"
@@ -49,9 +50,12 @@
 
 ## 平台覆盖
 
-- `target_platforms` 只允许 `bilibili`、`douyin` 和 `xiaohongshu`。
-- 单条检索表达可以面向平台子集，以支持平台化措辞。
-- 同一 QueryPlan 的全部首轮检索表达合计必须覆盖三个平台，使首轮可以按既定规则并发搜索。
+- 顶层 `platform_scope` 是用户声明并冻结的采集平台范围，必须是
+  `bilibili`、`douyin`、`xiaohongshu` 的非空、不重复子集。
+- 每条首轮或补充检索表达的 `target_platforms` 必须与完整
+  `platform_scope` 一致；单条表达不能再缩小或扩大平台范围。
+- 认证、搜索、补搜和恢复都只能访问冻结范围内的平台。范围为
+  `["bilibili"]` 时不会认证或调用抖音、小红书适配器。
 - 视觉面向、检索表达和目标平台列表经过确定性标准化后不得重复。
 
 ## 核心规则边界
@@ -69,3 +73,6 @@ QueryPlan 不得设置或覆盖：
 ## 冻结
 
 CLI 创建会话时复制规范化 QueryPlan 文件、记录内容哈希并与冻结输入绑定。`resume` 不重新读取原始 QueryPlan 文件；后续检索扩展通过版本化决策检查点追加，不修改首轮计划。
+
+0.2.0 不迁移 QueryPlans 1.0 或旧会话。CLI 以结构化版本不兼容错误拒绝，
+并保留原文件和会话目录不变。

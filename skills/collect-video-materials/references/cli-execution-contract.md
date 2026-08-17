@@ -27,6 +27,11 @@ They define the per-session Collector constraints. A downstream orchestration
 workflow may pass remaining budgets for one theme segment, but QueryPlan content
 must never carry these values.
 
+`QueryPlansPath` must point to QueryPlans 2.0. Its top-level `platform_scope` is the
+frozen collection boundary, and every initial or supplemental expression must use
+that complete scope. The runner and Collector must not authenticate or search a
+platform outside it.
+
 For monitoring and cancellation, invoke this same runner with `Operation="status"` or
 `Operation="cancel"`, plus `Workspace` and `SessionId`. These operations remain synchronous and
 relay the CLI JSON and exit code; do not call the CLI around the runner.

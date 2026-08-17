@@ -14,7 +14,7 @@ from typing import Any
 
 WORKFLOW_SCHEMA = "video-material-workflow/v1"
 DECISION_SCHEMA = "video-material-gap-decision/v1"
-BATCH_SCHEMA = "video-material-understanding-batch/v1"
+BATCH_SCHEMA = "video-material-understanding-batch/v2"
 ROUND_SCHEMA = "video-material-search-round/v1"
 SELECTION_SCHEMA = "segment-selection-output/v2"
 PLATFORMS = ("bilibili", "douyin", "xiaohongshu")
@@ -23,9 +23,32 @@ PLATFORMS = ("bilibili", "douyin", "xiaohongshu")
 class RoundPlanError(RuntimeError):
     """A search round cannot be derived without breaking workflow lineage."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "search_round_invalid",
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.details = dict(details or {})
+
 
 class SearchBudgetExhausted(RoundPlanError):
     """No additional Collector round is admissible."""
+
+
+def _queryplans_version_error(received_version: Any) -> RoundPlanError:
+    return RoundPlanError(
+        "query_plans schema version is unsupported.",
+        code="contract_version_unsupported",
+        details={
+            "document": "query_plans",
+            "received_version": received_version,
+            "supported_versions": ["2.0"],
+        },
+    )
 
 
 def _load_object(path: Path) -> dict[str, Any]:
@@ -90,6 +113,8 @@ def _source_contracts(
         semantic_input["initial_query_plans_path"],
         semantic_input["initial_query_plans_sha256"],
     )
+    if query_plans.get("schema_version") != "2.0":
+        raise _queryplans_version_error(query_plans.get("schema_version"))
     segments = collection_input.get("segments")
     plans = query_plans.get("plans")
     if not isinstance(segments, list) or not isinstance(plans, list):
@@ -119,6 +144,7 @@ def _validate_next_queries(
     decision: dict[str, Any],
     plan: dict[str, Any],
     previous_query_texts: set[str],
+    platform_scope: list[str],
 ) -> list[dict[str, Any]]:
     queries = decision.get("next_queries")
     facets = plan.get("required_visual_facets")
@@ -146,14 +172,14 @@ def _validate_next_queries(
             or not isinstance(text, str)
             or not text.strip()
             or not isinstance(targets, list)
-            or set(targets) != set(PLATFORMS)
-            or len(targets) != len(PLATFORMS)
+            or len(targets) != len(set(targets))
+            or set(targets) != set(platform_scope)
             or not isinstance(facet_ids, list)
             or not facet_ids
             or not set(facet_ids).issubset(known_facets)
         ):
             raise RoundPlanError(
-                "next query must target all three platforms and known facets"
+                "next query must target the complete platform scope and known facets"
             )
         text_key = " ".join(text.split()).casefold()
         if text_key in previous_query_texts:
@@ -166,9 +192,7 @@ def _validate_next_queries(
             {
                 "query_id": query_id,
                 "text": " ".join(text.split()),
-                "target_platforms": [
-                    platform for platform in PLATFORMS if platform in targets
-                ],
+                "target_platforms": list(platform_scope),
                 "facet_ids": facet_ids,
             }
         )
@@ -181,6 +205,7 @@ def _query_history(
     segment_id: str,
     query_plan_id: str,
     expected_rounds: int,
+    platform_scope: list[str],
 ) -> set[str]:
     if len(artifacts) != expected_rounds:
         raise RoundPlanError(
@@ -193,8 +218,10 @@ def _query_history(
         if artifact_hash in artifact_hashes:
             raise RoundPlanError("previous query plan artifacts must be unique")
         artifact_hashes.add(artifact_hash)
-        if artifact.get("schema_version") != "1.0":
-            raise RoundPlanError("previous query plan schema is unsupported")
+        if artifact.get("schema_version") != "2.0":
+            raise _queryplans_version_error(artifact.get("schema_version"))
+        if artifact.get("platform_scope") != platform_scope:
+            raise RoundPlanError("previous query plan platform scope does not match workflow")
         plans = artifact.get("plans")
         if not isinstance(plans, list) or len(plans) != 1:
             raise RoundPlanError(
@@ -329,10 +356,19 @@ def plan_round(
     if workflow.get("schema_version") != WORKFLOW_SCHEMA:
         raise RoundPlanError("workflow schema is unsupported")
     plan_ref = _plan_ref(workflow, segment_id)
-    collection_input, _query_plans, segment, original_plan = _source_contracts(
+    collection_input, query_plans, segment, original_plan = _source_contracts(
         workflow,
         segment_id,
     )
+    platform_scope = workflow.get("platform_scope")
+    if (
+        not isinstance(platform_scope, list)
+        or not platform_scope
+        or platform_scope != query_plans.get("platform_scope")
+        or len(platform_scope) != len(set(platform_scope))
+        or not set(platform_scope).issubset(PLATFORMS)
+    ):
+        raise RoundPlanError("workflow platform scope is invalid")
     max_rounds = plan_ref.get("max_rounds")
     max_videos = plan_ref.get("max_videos")
     if not isinstance(max_rounds, int) or not isinstance(max_videos, int):
@@ -380,6 +416,10 @@ def plan_round(
             raise RoundPlanError(
                 "understanding batch lineage does not match the workflow segment"
             )
+        if batch.get("platform_scope") != platform_scope:
+            raise RoundPlanError(
+                "understanding batch platform scope does not match the workflow"
+            )
         budget = batch.get("budget")
         if not isinstance(budget, dict) or not isinstance(
             budget.get("occupied_media_unit_count"), int
@@ -392,6 +432,7 @@ def plan_round(
             segment_id=segment_id,
             query_plan_id=plan_ref["query_plan_id"],
             expected_rounds=previous_round,
+            platform_scope=platform_scope,
         )
         declared_history = decision.get("previous_query_texts")
         if (
@@ -406,7 +447,12 @@ def plan_round(
             raise RoundPlanError(
                 "gap decision query history does not match prior round artifacts"
             )
-        queries = _validate_next_queries(decision, original_plan, history)
+        queries = _validate_next_queries(
+            decision,
+            original_plan,
+            history,
+            platform_scope,
+        )
 
     remaining_rounds = max_rounds - round_number + 1
     remaining_slots = max_videos - occupied
@@ -421,7 +467,8 @@ def plan_round(
         "segments": [segment],
     }
     round_query_plans = {
-        "schema_version": "1.0",
+        "schema_version": "2.0",
+        "platform_scope": platform_scope,
         "plans": [
             {
                 "query_plan_id": original_plan["query_plan_id"],
@@ -521,17 +568,20 @@ def main(argv: list[str] | None = None) -> int:
         _atomic_write_json(output_dir / "query-plans.json", query_plans)
     except (RoundPlanError, OSError, ValueError, KeyError) as error:
         budget_exhausted = isinstance(error, SearchBudgetExhausted)
+        code = (
+            error.code
+            if isinstance(error, RoundPlanError)
+            else "search_round_invalid"
+        )
+        details = error.details if isinstance(error, RoundPlanError) else {}
         print(
             json.dumps(
                 {
                     "schema_version": ROUND_SCHEMA,
                     "status": "budget_exhausted" if budget_exhausted else "error",
-                    "code": (
-                        "search_budget_exhausted"
-                        if budget_exhausted
-                        else "search_round_invalid"
-                    ),
+                    "code": "search_budget_exhausted" if budget_exhausted else code,
                     "message": str(error),
+                    "details": details,
                 },
                 ensure_ascii=False,
             ),

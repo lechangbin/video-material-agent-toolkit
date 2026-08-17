@@ -34,6 +34,26 @@ class ContractError(CollectorError):
         super().__init__("contract_invalid", message, details=details)
 
 
+class ContractVersionError(CollectorError):
+    """A versioned input uses a contract version this release will not read."""
+
+    def __init__(
+        self,
+        document: str,
+        received_version: Any,
+        *supported_versions: str,
+    ) -> None:
+        super().__init__(
+            "contract_version_unsupported",
+            f"{document} schema version is unsupported.",
+            details={
+                "document": document,
+                "received_version": received_version,
+                "supported_versions": list(supported_versions),
+            },
+        )
+
+
 class SessionNotFoundError(CollectorError):
     """The requested session cannot be found in the supplied workspace."""
 
@@ -42,6 +62,26 @@ class SessionNotFoundError(CollectorError):
             "session_not_found",
             "The requested collection session does not exist in this workspace.",
             details={"session_id": session_id},
+        )
+
+
+class SessionVersionError(CollectorError):
+    """A durable session predates the only schema supported by this release."""
+
+    def __init__(
+        self,
+        session_id: str,
+        received_version: int,
+        *supported_versions: int,
+    ) -> None:
+        super().__init__(
+            "session_version_unsupported",
+            "The collection session schema version is unsupported.",
+            details={
+                "session_id": session_id,
+                "received_version": received_version,
+                "supported_versions": list(supported_versions),
+            },
         )
 
 

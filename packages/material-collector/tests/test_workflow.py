@@ -50,39 +50,27 @@ def _create_session(
     tmp_path: Path,
     *,
     max_videos: int = 6,
-    add_bilibili_query: bool = False,
-    add_xiaohongshu_query: bool = False,
+    platform_scope: tuple[Platform, ...] = PLATFORM_ORDER,
+    add_second_query: bool = False,
     request_timeout_seconds: int = 30,
 ) -> tuple[Path, str]:
     input_path = tmp_path / "input.json"
     plans_path = tmp_path / "plans.json"
+    target_platforms = [platform.value for platform in platform_scope]
     queries = [
         {
             "query_id": "query_city",
             "text": "城市更新 旧工业区",
-            "target_platforms": [
-                "bilibili",
-                "douyin",
-                "xiaohongshu",
-            ],
+            "target_platforms": target_platforms,
             "facet_ids": ["facet_change"],
         }
     ]
-    if add_bilibili_query:
+    if add_second_query:
         queries.append(
             {
                 "query_id": "query_city_second",
                 "text": "城市更新 公共空间",
-                "target_platforms": ["bilibili"],
-                "facet_ids": ["facet_change"],
-            }
-        )
-    if add_xiaohongshu_query:
-        queries.append(
-            {
-                "query_id": "query_city_xiaohongshu_second",
-                "text": "城市更新 公共空间",
-                "target_platforms": ["xiaohongshu"],
+                "target_platforms": target_platforms,
                 "facet_ids": ["facet_change"],
             }
         )
@@ -104,7 +92,8 @@ def _create_session(
     _write_json(
         plans_path,
         {
-            "schema_version": "1.0",
+            "schema_version": "2.0",
+            "platform_scope": target_platforms,
             "plans": [
                 {
                     "segment_id": "seg_city",
@@ -596,6 +585,38 @@ async def test_workflow_collects_sources_and_pauses_for_integration(
 
 
 @pytest.mark.asyncio
+async def test_bilibili_only_scope_never_contacts_other_platforms(
+    tmp_path: Path,
+) -> None:
+    workspace, session_id = _create_session(
+        tmp_path,
+        platform_scope=(Platform.BILIBILI,),
+    )
+    authentication = _Authentication()
+    adapters = {platform: _Platform(platform) for platform in PLATFORM_ORDER}
+    workflow = _make_workflow(
+        authentication,
+        adapters,
+        SessionRuntime(lease_ttl_seconds=900),
+    )
+
+    result = await workflow.run(workspace, session_id)
+
+    assert result.platform_scope == (Platform.BILIBILI,)
+    assert json.loads(Path(result.result_path).read_text(encoding="utf-8"))[
+        "platform_scope"
+    ] == ["bilibili"]
+    assert authentication.ensure_calls == [(Platform.BILIBILI,)]
+    assert adapters[Platform.BILIBILI].search_count == 1
+    assert adapters[Platform.BILIBILI].resolve_count == 1
+    assert adapters[Platform.BILIBILI].fetch_count == 1
+    for platform in (Platform.DOUYIN, Platform.XIAOHONGSHU):
+        assert adapters[platform].search_count == 0
+        assert adapters[platform].resolve_count == 0
+        assert adapters[platform].fetch_count == 0
+
+
+@pytest.mark.asyncio
 async def test_workflow_uses_frozen_request_timeout_for_every_platform_call(
     tmp_path: Path,
 ) -> None:
@@ -623,7 +644,7 @@ async def test_each_search_expression_uses_per_platform_limit_of_twenty(
     workspace, session_id = _create_session(
         tmp_path,
         max_videos=9,
-        add_bilibili_query=True,
+        add_second_query=True,
     )
     adapters = {platform: _Platform(platform) for platform in PLATFORM_ORDER}
     workflow = _make_workflow(
@@ -635,8 +656,8 @@ async def test_each_search_expression_uses_per_platform_limit_of_twenty(
     await workflow.run(workspace, session_id)
 
     assert adapters[Platform.BILIBILI].seen_search_limits == [20, 20]
-    assert adapters[Platform.DOUYIN].seen_search_limits == [20]
-    assert adapters[Platform.XIAOHONGSHU].seen_search_limits == [20]
+    assert adapters[Platform.DOUYIN].seen_search_limits == [20, 20]
+    assert adapters[Platform.XIAOHONGSHU].seen_search_limits == [20, 20]
 
 
 @pytest.mark.asyncio
@@ -1139,7 +1160,7 @@ async def test_rendered_search_challenge_pauses_for_human(tmp_path: Path) -> Non
     workspace, session_id = _create_session(
         tmp_path,
         max_videos=9,
-        add_xiaohongshu_query=True,
+        add_second_query=True,
     )
     adapters = {platform: _Platform(platform) for platform in PLATFORM_ORDER}
     adapters[Platform.XIAOHONGSHU].search_failures.extend(
@@ -1177,8 +1198,8 @@ async def test_rendered_search_challenge_pauses_for_human(tmp_path: Path) -> Non
         for event, details in progress.events
         if event == "search_plan_settled"
     )
-    assert settled["requested_requests"] == 4
-    assert settled["completed_requests"] == 2
+    assert settled["requested_requests"] == 6
+    assert settled["completed_requests"] == 4
     assert settled["failed_requests"] == 1
     assert settled["not_attempted_requests"] == 1
 
@@ -1239,7 +1260,7 @@ async def test_cancel_is_observed_between_serial_platform_requests(
     workspace, session_id = _create_session(
         tmp_path,
         max_videos=9,
-        add_bilibili_query=True,
+        add_second_query=True,
     )
     runtime = SessionRuntime(lease_ttl_seconds=900)
 

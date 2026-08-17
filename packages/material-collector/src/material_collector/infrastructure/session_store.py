@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from material_collector.application.sessions import (
     COLLECTION_INPUT_SNAPSHOT,
@@ -46,6 +46,7 @@ from material_collector.core.errors import (
     ContractError,
     SessionNotFoundError,
     SessionStateError,
+    SessionVersionError,
     WorkspaceError,
 )
 
@@ -220,6 +221,26 @@ class SqliteSessionStore:
             ) from error
 
         result_file = session_dir / COLLECTION_RESULT
+        plans_path = normalized_workspace / Path(str(row["query_plans_snapshot_path"]))
+        try:
+            plans_bytes = plans_path.read_bytes()
+        except OSError as error:
+            raise SessionStateError(
+                "The frozen QueryPlan file could not be read.",
+                details={"session_id": session_id},
+            ) from error
+        if hashlib.sha256(plans_bytes).hexdigest() != str(row["query_plans_sha256"]):
+            raise SessionStateError(
+                "The frozen QueryPlan file failed hash validation.",
+                details={"session_id": session_id},
+            )
+        try:
+            platform_scope = QueryPlans.model_validate_json(plans_bytes).platform_scope
+        except ValidationError as error:
+            raise SessionStateError(
+                "The frozen QueryPlan contract is unsupported.",
+                details={"session_id": session_id},
+            ) from error
         return SessionView(
             session_id=str(row["session_id"]),
             workspace_path=str(normalized_workspace),
@@ -231,6 +252,7 @@ class SqliteSessionStore:
             input_sha256=str(row["input_sha256"]),
             query_plans_snapshot_path=str(row["query_plans_snapshot_path"]),
             query_plans_sha256=str(row["query_plans_sha256"]),
+            platform_scope=platform_scope,
             constraints=RuntimeConstraints(
                 max_rounds=int(row["max_rounds"]),
                 max_videos=int(row["max_videos"]),
@@ -703,9 +725,10 @@ def _verify_database(connection: sqlite3.Connection, session_id: str) -> int:
         )
     schema_version = int(schema_row["schema_version"])
     if schema_version not in SUPPORTED_SESSION_SCHEMA_VERSIONS:
-        raise SessionStateError(
-            "The session database schema is unsupported.",
-            details={"session_id": session_id, "schema_version": schema_version},
+        raise SessionVersionError(
+            session_id,
+            schema_version,
+            *sorted(SUPPORTED_SESSION_SCHEMA_VERSIONS),
         )
     return schema_version
 

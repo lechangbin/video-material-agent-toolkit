@@ -21,7 +21,8 @@ def collection_document() -> dict[str, Any]:
 
 def query_plan_document() -> dict[str, Any]:
     return {
-        "schema_version": "1.0",
+        "schema_version": "2.0",
+        "platform_scope": ["bilibili", "douyin", "xiaohongshu"],
         "plans": [
             {
                 "segment_id": "seg_002",
@@ -94,17 +95,33 @@ def test_query_plan_cannot_override_runtime_constraints() -> None:
     assert captured.value.details["document"] == "query_plans"
 
 
-def test_query_plan_must_cover_every_platform() -> None:
+@pytest.mark.parametrize(
+    "platform_scope",
+    [[], ["bilibili", "bilibili"]],
+)
+def test_platform_scope_must_be_non_empty_and_unique(
+    platform_scope: list[str],
+) -> None:
+    plans = query_plan_document()
+    plans["platform_scope"] = platform_scope
+
+    with pytest.raises(ContractError):
+        normalize_contracts(collection_document(), plans)
+
+
+def test_every_query_must_target_the_complete_platform_scope() -> None:
     plans = query_plan_document()
     plans["plans"][0]["initial_queries"][0]["target_platforms"] = ["bilibili"]
 
     with pytest.raises(ContractError) as captured:
         normalize_contracts(collection_document(), plans)
 
-    assert captured.value.details["missing_platforms"] == [
+    assert captured.value.details["platform_scope"] == (
+        "bilibili",
         "douyin",
         "xiaohongshu",
-    ]
+    )
+    assert captured.value.details["target_platforms"] == ("bilibili",)
 
 
 def test_every_segment_requires_exactly_one_query_plan() -> None:

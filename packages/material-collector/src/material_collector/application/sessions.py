@@ -13,10 +13,11 @@ from material_collector.core.contracts import (
     QueryPlans,
     normalize_inline_text,
 )
+from material_collector.core.media import Platform
 
 OUTPUT_SCHEMA_VERSION = "1.0"
-SESSION_SCHEMA_VERSION = 2
-SUPPORTED_SESSION_SCHEMA_VERSIONS = frozenset({1, SESSION_SCHEMA_VERSION})
+SESSION_SCHEMA_VERSION = 3
+SUPPORTED_SESSION_SCHEMA_VERSIONS = frozenset({SESSION_SCHEMA_VERSION})
 CONTROL_DIRECTORY = ".material-collector"
 SESSIONS_DIRECTORY = "sessions"
 WORKSPACE_MARKER = "workspace.json"
@@ -83,6 +84,7 @@ class SessionView(_OutputModel):
     input_sha256: str
     query_plans_snapshot_path: str
     query_plans_sha256: str
+    platform_scope: tuple[Platform, ...]
     constraints: RuntimeConstraints
     segments: tuple[SessionSegmentView, ...]
     warnings: tuple[WarningView, ...]

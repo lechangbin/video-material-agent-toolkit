@@ -104,6 +104,7 @@ class WorkflowResult(_WorkflowModel):
     schema_version: Literal["1.0"] = "1.0"
     session_id: str
     workspace_path: str
+    platform_scope: tuple[Platform, ...]
     status: str
     result_path: str
     candidates_found: int
@@ -188,6 +189,7 @@ class CollectionWorkflow:
             lease = await self._run_authentication(
                 lease,
                 session.constraints.auth_wait_seconds,
+                query_plans.platform_scope,
             )
             lease, search_issues = await self._run_search(
                 lease,
@@ -305,6 +307,7 @@ class CollectionWorkflow:
         self,
         lease: ExecutionLease,
         wait_seconds: int,
+        platform_scope: tuple[Platform, ...],
     ) -> ExecutionLease:
         if lease.next_stage != "authenticate":
             return lease
@@ -318,7 +321,7 @@ class CollectionWorkflow:
             lease, probes = await self._await_with_lease_maintenance(
                 lease,
                 self._authentication.ensure_authenticated(
-                    PLATFORM_ORDER,
+                    platform_scope,
                     self._sessions.get_session(
                         lease.workspace,
                         lease.session_id,
@@ -1480,6 +1483,7 @@ def _workflow_result(
     return WorkflowResult(
         session_id=manifest.session_id,
         workspace_path=manifest.workspace_path,
+        platform_scope=manifest.platform_scope,
         status=status or (action.type if action else "completed"),
         result_path=str(result_path),
         candidates_found=len(manifest.candidates),

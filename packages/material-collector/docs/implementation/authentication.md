@@ -16,7 +16,7 @@
   后台线程耗尽 60 秒。
 - `probe()` 只返回 `valid`、`invalid`、`challenge_required` 或 `probe_failed`，
   且公开结果只包含平台、配置标识、时间和规范化原因码。
-- `ensure_authenticated()` 固定按 Bilibili、抖音、小红书串行处理。明确未登录或
+- `ensure_authenticated()` 按 Bilibili、抖音、小红书的支持顺序过滤到调用方传入的冻结 `platform_scope`，只串行处理范围内平台。明确未登录或
   需要挑战时才打开有头浏览器；不可靠探针不会被误判为未登录。
 - `logout()` 要求确认值与平台值完全相同，只删除该平台配置。
 - 无头探针和有头登录都以 `--no-proxy-server` 启动 Chrome，明确绕过 Windows
