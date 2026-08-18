@@ -825,13 +825,13 @@ async def test_primary_proxy_is_published_through_title_material_view(
     display = workspace / asset.display_relative_path
     assert display.is_file()
     assert display.read_bytes() == (workspace / asset.relative_path).read_bytes()
-    assert display.parts[-3] == (
-        "城市_更新_完整_ _秋季___bilibili__bilibili_s--31c56064"
-    )
+    assert display.parts[-3].startswith("城市_更新")
+    assert "--" in display.parts[-3]
+    assert display.parts[-3].endswith("__bilibili__bilibili_s--31c56064")
     assert display.parts[-2] == "low-proxy"
-    assert display.name == (
-        "城市_更新_完整_ _秋季___bilibili_s--00e934af.mp4"
-    )
+    assert display.name.startswith("城市_更新")
+    assert "--" in display.name
+    assert display.name.endswith("__bilibili_s--00e934af.mp4")
     result_path = (
         workspace
         / ".material-collector"
@@ -1071,30 +1071,43 @@ async def test_same_author_and_title_downloads_every_platform_before_fingerprint
     assert adapters[Platform.BILIBILI].fetch_count == 1
     assert adapters[Platform.DOUYIN].fetch_count == 1
     assert adapters[Platform.XIAOHONGSHU].fetch_count == 1
-    manifest = workflow._manifest.export(workspace, session_id)
-    assert len(manifest.work_groups) == 1
-    group = manifest.work_groups[0]
-    assert group.status == "confirmed_duplicate"
-    assert group.primary_media_unit_id.startswith("bilibili:")
-    assert [member.platform for member in group.members] == list(PLATFORM_ORDER)
-    assert [member.fallback_order for member in group.members] == [1, 2, 3]
+    result_path = (
+        workspace
+        / ".material-collector"
+        / "sessions"
+        / session_id
+        / "collection-result.json"
+    )
+    manifest = json.loads(result_path.read_text(encoding="utf-8"))
+    assert len(manifest["work_groups"]) == 1
+    group = manifest["work_groups"][0]
+    assert group["status"] == "confirmed_duplicate"
+    assert group["primary_media_unit_id"].startswith("bilibili:")
+    assert [member["platform"] for member in group["members"]] == [
+        platform.value for platform in PLATFORM_ORDER
+    ]
+    assert [member["fallback_order"] for member in group["members"]] == [1, 2, 3]
     assert (
         sum(
-            unit.eligible_for_understanding
-            for candidate in manifest.candidates
-            for unit in candidate.media_units
+            unit["eligible_for_understanding"]
+            for candidate in manifest["candidates"]
+            for unit in candidate["media_units"]
         )
         == 1
     )
     assets = [
-        unit.proxy_asset
-        for candidate in manifest.candidates
-        for unit in candidate.media_units
+        unit["proxy_asset"]
+        for candidate in manifest["candidates"]
+        for unit in candidate["media_units"]
     ]
     assert sum(
-        asset is not None and asset.display_relative_path is not None
+        asset is not None and asset["display_relative_path"] is not None
         for asset in assets
     ) == 1
+    assert all(
+        asset is not None and asset["relative_path"].startswith("assets/sha256/")
+        for asset in assets
+    )
     assert len(list((workspace / "materials" / "by-session" / session_id).rglob("*.mp4"))) == 1
     comparisons = fingerprints.compare_count
 

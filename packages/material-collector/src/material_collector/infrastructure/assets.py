@@ -12,7 +12,12 @@ import uuid
 from pathlib import Path
 
 from material_collector.core.errors import CollectorError, WorkspaceError
-from material_collector.core.media import AssetRecord, FetchResult, MediaQuality, Platform
+from material_collector.core.media import (
+    AssetRecord,
+    FetchResult,
+    MediaQuality,
+    TitleViewPublication,
+)
 
 ASSET_DIRECTORY = "assets"
 MATERIAL_VIEW_DIRECTORY = "materials"
@@ -90,7 +95,13 @@ class WorkspaceAssetStore:
                     details={"path": str(target), "sha256": digest},
                 )
         else:
-            _copy_atomically(source, target, target_directory)
+            _copy_atomically(
+                source,
+                target,
+                target_directory,
+                expected_sha256=digest,
+                expected_size_bytes=size_bytes,
+            )
 
         relative_path = target.relative_to(self.workspace).as_posix()
         return AssetRecord(
@@ -132,38 +143,35 @@ class WorkspaceAssetStore:
     def publish_title_view(
         self,
         asset: AssetRecord,
-        *,
-        session_id: str,
-        platform: Platform,
-        source_id: str,
-        source_title: str,
-        media_unit_title: str,
+        publication: TitleViewPublication,
     ) -> AssetRecord:
         """Publish one readable session view without changing asset identity."""
 
-        if _SAFE_SESSION_ID.fullmatch(session_id) is None:
+        if _SAFE_SESSION_ID.fullmatch(publication.session_id) is None:
             raise WorkspaceError(
                 "The title material view session identifier is invalid.",
-                details={"session_id": session_id},
+                details={"session_id": publication.session_id},
             )
         source = self.resolve(asset)
-        local_media_unit_id = asset.media_unit_id.removeprefix(f"{platform.value}:")
+        local_media_unit_id = asset.media_unit_id.removeprefix(
+            f"{publication.platform.value}:"
+        )
         source_title_limit = _MAX_TITLE_LENGTH
         media_title_limit = _MAX_TITLE_LENGTH
         while True:
             source_directory = (
-                f"{_safe_title(source_title, source_title_limit)}__{platform.value}__"
-                f"{_safe_identity(source_id)}"
+                f"{_safe_title(publication.source_title, source_title_limit)}__"
+                f"{publication.platform.value}__{_safe_identity(publication.source_id)}"
             )
             filename = (
-                f"{_safe_title(media_unit_title, media_title_limit)}__"
+                f"{_safe_title(publication.media_unit_title, media_title_limit)}__"
                 f"{_safe_identity(local_media_unit_id)}{source.suffix.lower()}"
             )
             target_directory = (
                 self.workspace
                 / MATERIAL_VIEW_DIRECTORY
                 / "by-session"
-                / session_id
+                / publication.session_id
                 / source_directory
                 / _QUALITY_DIRECTORY[asset.quality]
             )
@@ -189,13 +197,31 @@ class WorkspaceAssetStore:
             if os.name == "nt" and len(str(target)) > _WINDOWS_MAX_TARGET_LENGTH:
                 raise OSError("The title material view path exceeds Windows limits.")
             target_directory.mkdir(parents=True, exist_ok=True)
-            if not target.exists():
+            target_valid = False
+            if target.exists():
+                digest, size_bytes = _hash_file(target)
+                target_valid = digest == asset.sha256 and size_bytes == asset.size_bytes
+            if not target_valid and not target.exists():
                 try:
                     os.link(source, target)
                 except FileExistsError:
                     pass
                 except OSError:
-                    _copy_atomically(source, target, target_directory)
+                    _copy_atomically(
+                        source,
+                        target,
+                        target_directory,
+                        expected_sha256=asset.sha256,
+                        expected_size_bytes=asset.size_bytes,
+                    )
+            elif not target_valid:
+                _copy_atomically(
+                    source,
+                    target,
+                    target_directory,
+                    expected_sha256=asset.sha256,
+                    expected_size_bytes=asset.size_bytes,
+                )
             digest, size_bytes = _hash_file(target)
             if digest != asset.sha256 or size_bytes != asset.size_bytes:
                 raise OSError("The title material view failed integrity verification.")
@@ -278,7 +304,14 @@ def _hash_file(path: Path) -> tuple[str, int]:
     return digest.hexdigest(), size_bytes
 
 
-def _copy_atomically(source: Path, target: Path, target_directory: Path) -> None:
+def _copy_atomically(
+    source: Path,
+    target: Path,
+    target_directory: Path,
+    *,
+    expected_sha256: str,
+    expected_size_bytes: int,
+) -> None:
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=".import-",
         suffix=".tmp",
@@ -290,6 +323,9 @@ def _copy_atomically(source: Path, target: Path, target_directory: Path) -> None
             shutil.copyfileobj(input_file, output, length=1024 * 1024)
             output.flush()
             os.fsync(output.fileno())
+        digest, size_bytes = _hash_file(temporary_path)
+        if digest != expected_sha256 or size_bytes != expected_size_bytes:
+            raise OSError("The staged asset copy failed integrity verification.")
         os.replace(temporary_path, target)
     except Exception:
         try:
@@ -313,7 +349,7 @@ def _safe_title(value: str, max_length: int) -> str:
         cleaned = "untitled"
     if cleaned.casefold().upper() in _WINDOWS_RESERVED:
         cleaned = f"_{cleaned}"
-    if len(cleaned) > max_length:
+    if cleaned != value or len(cleaned) > max_length:
         digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
         prefix_length = max_length - len(digest) - 2
         cleaned = f"{cleaned[:prefix_length].rstrip(' .')}--{digest}"

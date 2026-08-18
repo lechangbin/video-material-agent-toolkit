@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict
 from material_collector.application.ports import AssetStoreFactory, MediaFetcher
 from material_collector.application.sessions import CONTROL_DIRECTORY, SESSIONS_DIRECTORY
 from material_collector.application.source_manifest import SourceManifestApplication
+from material_collector.application.title_views import publish_and_record_title_view
 from material_collector.core.errors import CollectorError, ContractError
 from material_collector.core.manifest import (
     CollectionResult,
@@ -24,6 +25,7 @@ from material_collector.core.media import (
     MediaUnit,
     Platform,
     PlatformContext,
+    TitleViewPublication,
 )
 
 
@@ -183,21 +185,21 @@ class MediaApplication:
                 except CollectorError:
                     pass
         if media_unit.source_role == "primary":
-            published = asset_store.publish_title_view(
-                asset,
-                session_id=session_id,
-                platform=candidate.platform,
-                source_id=candidate.source_id,
-                source_title=candidate.title,
-                media_unit_title=media_unit.title,
+            asset, recorded = publish_and_record_title_view(
+                manifest=self._manifest,
+                asset_store=asset_store,
+                workspace=normalized_workspace,
+                asset=asset,
+                publication=TitleViewPublication(
+                    session_id=session_id,
+                    platform=candidate.platform,
+                    source_id=candidate.source_id,
+                    source_title=candidate.title,
+                    media_unit_title=media_unit.title,
+                ),
             )
-            if published != asset:
-                asset = published
-                result = self._manifest.record_asset(
-                    normalized_workspace,
-                    session_id,
-                    asset,
-                )
+            if recorded is not None:
+                result = recorded
         return HighQualityFetchView(
             session_id=session_id,
             workspace_path=result.workspace_path,

@@ -20,6 +20,7 @@ from material_collector.core.media import (
     ResolvedSource,
     SearchBatch,
     SearchRequest,
+    TitleViewPublication,
 )
 
 
@@ -113,12 +114,7 @@ class AssetStore(Protocol):
     def publish_title_view(
         self,
         asset: AssetRecord,
-        *,
-        session_id: str,
-        platform: Platform,
-        source_id: str,
-        source_title: str,
-        media_unit_title: str,
+        publication: TitleViewPublication,
     ) -> AssetRecord: ...
 
     def resolve(self, asset: AssetRecord) -> Path: ...

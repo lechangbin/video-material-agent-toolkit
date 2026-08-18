@@ -30,6 +30,7 @@ from material_collector.core.media import (
     ResolvedSource,
     SearchBatch,
     SearchRequest,
+    TitleViewPublication,
 )
 from material_collector.infrastructure.assets import WorkspaceAssetStoreFactory
 from material_collector.infrastructure.session_store import SqliteSessionStore
@@ -359,11 +360,13 @@ async def test_fetch_hq_receives_persisted_media_identity_metadata(
     )
     proxy = asset_store.publish_title_view(
         proxy,
-        session_id=session_id,
-        platform=Platform.BILIBILI,
-        source_id="BV1TEST",
-        source_title="测试视频",
-        media_unit_title="分P",
+        TitleViewPublication(
+            session_id=session_id,
+            platform=Platform.BILIBILI,
+            source_id="BV1TEST",
+            source_title="测试视频",
+            media_unit_title="分P",
+        ),
     )
     manifest.record_asset(workspace, session_id, proxy)
     manifest.replace_work_groups(

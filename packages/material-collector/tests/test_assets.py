@@ -12,6 +12,7 @@ from material_collector.core.media import (
     FetchResult,
     MediaQuality,
     Platform,
+    TitleViewPublication,
 )
 from material_collector.infrastructure import assets as asset_module
 from material_collector.infrastructure.assets import WorkspaceAssetStore
@@ -129,19 +130,23 @@ def test_title_view_prefers_hard_links_and_preserves_previous_titles(
 
     first = store.publish_title_view(
         asset,
-        session_id="ses_titles",
-        platform=Platform.BILIBILI,
-        source_id="BV1:source",
-        source_title="CON",
-        media_unit_title='第一段：城市/秋色? "全景"',
+        TitleViewPublication(
+            session_id="ses_titles",
+            platform=Platform.BILIBILI,
+            source_id="BV1:source",
+            source_title="CON",
+            media_unit_title='第一段：城市/秋色? "全景"',
+        ),
     )
     second = store.publish_title_view(
         asset,
-        session_id="ses_titles",
-        platform=Platform.BILIBILI,
-        source_id="BV1:source",
-        source_title="更新后的标题",
-        media_unit_title="更新后的分段",
+        TitleViewPublication(
+            session_id="ses_titles",
+            platform=Platform.BILIBILI,
+            source_id="BV1:source",
+            source_title="更新后的标题",
+            media_unit_title="更新后的分段",
+        ),
     )
 
     assert first.display_relative_path is not None
@@ -150,8 +155,9 @@ def test_title_view_prefers_hard_links_and_preserves_previous_titles(
     second_path = store.workspace / second.display_relative_path
     assert first_path.is_file()
     assert second_path.is_file()
-    assert first_path.parts[-3].startswith("_CON__bilibili__")
-    assert first_path.name.startswith("第一段_城市_秋色_ _全景___")
+    assert first_path.parts[-3].startswith("_CON--")
+    assert "__bilibili__" in first_path.parts[-3]
+    assert first_path.name.startswith("第一段_城市_秋色_ _全景_--")
     assert os.path.samefile(store.resolve(asset), first_path)
     assert os.path.samefile(store.resolve(asset), second_path)
 
@@ -166,11 +172,13 @@ def test_title_view_falls_back_to_verified_copy(
 
     published = store.publish_title_view(
         asset,
-        session_id="ses_copy",
-        platform=Platform.BILIBILI,
-        source_id="BV1COPY",
-        source_title="复制回退",
-        media_unit_title="素材",
+        TitleViewPublication(
+            session_id="ses_copy",
+            platform=Platform.BILIBILI,
+            source_id="BV1COPY",
+            source_title="复制回退",
+            media_unit_title="素材",
+        ),
     )
 
     assert published.display_relative_path is not None
@@ -187,19 +195,23 @@ def test_title_view_bounds_long_windows_paths_without_title_collisions(
 
     first = store.publish_title_view(
         asset,
-        session_id="ses_long_titles",
-        platform=Platform.BILIBILI,
-        source_id="BV1LONG",
-        source_title="秋" * 200 + "甲",
-        media_unit_title="枫" * 200 + "甲",
+        TitleViewPublication(
+            session_id="ses_long_titles",
+            platform=Platform.BILIBILI,
+            source_id="BV1LONG",
+            source_title="秋" * 200 + "甲",
+            media_unit_title="枫" * 200 + "甲",
+        ),
     )
     second = store.publish_title_view(
         asset,
-        session_id="ses_long_titles",
-        platform=Platform.BILIBILI,
-        source_id="BV1LONG",
-        source_title="秋" * 200 + "乙",
-        media_unit_title="枫" * 200 + "乙",
+        TitleViewPublication(
+            session_id="ses_long_titles",
+            platform=Platform.BILIBILI,
+            source_id="BV1LONG",
+            source_title="秋" * 200 + "乙",
+            media_unit_title="枫" * 200 + "乙",
+        ),
     )
 
     assert first.display_relative_path is not None
@@ -212,6 +224,99 @@ def test_title_view_bounds_long_windows_paths_without_title_collisions(
     assert first_path.read_bytes() == second_path.read_bytes() == b"video"
 
 
+def test_lossy_title_sanitization_retains_raw_title_identity(tmp_path: Path) -> None:
+    store = WorkspaceAssetStore(tmp_path / "workspace")
+    asset = store.import_fetch(fetched_file(tmp_path / "source.mp4", b"video"))
+
+    first = store.publish_title_view(
+        asset,
+        TitleViewPublication(
+            session_id="ses_lossy_titles",
+            platform=Platform.BILIBILI,
+            source_id="BV1SAME",
+            source_title="秋色/全景",
+            media_unit_title="秋色/全景",
+        ),
+    )
+    second = store.publish_title_view(
+        asset,
+        TitleViewPublication(
+            session_id="ses_lossy_titles",
+            platform=Platform.BILIBILI,
+            source_id="BV1SAME",
+            source_title="秋色?全景",
+            media_unit_title="秋色?全景",
+        ),
+    )
+
+    assert first.display_relative_path is not None
+    assert second.display_relative_path is not None
+    assert first.display_relative_path != second.display_relative_path
+    assert (store.workspace / first.display_relative_path).is_file()
+    assert (store.workspace / second.display_relative_path).is_file()
+
+
+def test_copy_fallback_verifies_before_publishing_visible_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = WorkspaceAssetStore(tmp_path / "workspace")
+    asset = store.import_fetch(fetched_file(tmp_path / "source.mp4", b"video"))
+    monkeypatch.setattr(asset_module.os, "link", lambda *_args: _raise_os_error())
+
+    def corrupt_copy(
+        _source: object,
+        output: object,
+        *,
+        length: int,
+    ) -> None:
+        del length
+        output.write(b"corrupt")  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(asset_module.shutil, "copyfileobj", corrupt_copy)
+
+    with pytest.raises(CollectorError) as captured:
+        store.publish_title_view(
+            asset,
+            TitleViewPublication(
+                session_id="ses_verify_first",
+                platform=Platform.BILIBILI,
+                source_id="BV1VERIFY",
+                source_title="校验后发布",
+                media_unit_title="素材",
+            ),
+        )
+
+    display = store.workspace / captured.value.details["display_relative_path"]
+    assert captured.value.code == "named_view_publish_failed"
+    assert not display.exists()
+
+
+def test_retry_repairs_an_invalid_existing_copy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = WorkspaceAssetStore(tmp_path / "workspace")
+    asset = store.import_fetch(fetched_file(tmp_path / "source.mp4", b"video"))
+    monkeypatch.setattr(asset_module.os, "link", lambda *_args: _raise_os_error())
+    publication = TitleViewPublication(
+        session_id="ses_repair_copy",
+        platform=Platform.BILIBILI,
+        source_id="BV1REPAIR",
+        source_title="修复入口",
+        media_unit_title="素材",
+    )
+    first = store.publish_title_view(asset, publication)
+    assert first.display_relative_path is not None
+    display = store.workspace / first.display_relative_path
+    display.write_bytes(b"corrupt")
+
+    repaired = store.publish_title_view(asset, publication)
+
+    assert repaired.display_relative_path == first.display_relative_path
+    assert display.read_bytes() == b"video"
+
+
 def test_title_view_reports_retryable_structured_publish_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -222,17 +327,19 @@ def test_title_view_reports_retryable_structured_publish_failure(
     monkeypatch.setattr(
         asset_module,
         "_copy_atomically",
-        lambda *_args: _raise_os_error(),
+        lambda *_args, **_kwargs: _raise_os_error(),
     )
 
     with pytest.raises(CollectorError) as captured:
         store.publish_title_view(
             asset,
-            session_id="ses_failure",
-            platform=Platform.BILIBILI,
-            source_id="BV1FAIL",
-            source_title="发布失败",
-            media_unit_title="素材",
+            TitleViewPublication(
+                session_id="ses_failure",
+                platform=Platform.BILIBILI,
+                source_id="BV1FAIL",
+                source_title="发布失败",
+                media_unit_title="素材",
+            ),
         )
 
     assert captured.value.code == "named_view_publish_failed"

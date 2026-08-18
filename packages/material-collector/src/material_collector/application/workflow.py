@@ -41,6 +41,7 @@ from material_collector.application.source_manifest import (
     MAX_AUTOMATIC_DURATION_SECONDS,
     SourceManifestApplication,
 )
+from material_collector.application.title_views import publish_and_record_title_view
 from material_collector.core.contracts import QueryPlans
 from material_collector.core.errors import CollectorError, SessionStateError
 from material_collector.core.fingerprints import FingerprintMatch
@@ -59,6 +60,7 @@ from material_collector.core.media import (
     Platform,
     PlatformContext,
     SearchRequest,
+    TitleViewPublication,
 )
 
 WORKFLOW_STAGES: tuple[str, ...] = (
@@ -1193,19 +1195,26 @@ class CollectionWorkflow:
                     if asset is None:
                         continue
                     if unit.source_role == "primary":
-                        published = asset_store.publish_title_view(
-                            asset,
-                            session_id=lease.session_id,
-                            platform=candidate.platform,
-                            source_id=candidate.source_id,
-                            source_title=candidate.title,
-                            media_unit_title=unit.title,
+                        published, recorded = publish_and_record_title_view(
+                            manifest=self._manifest,
+                            asset_store=asset_store,
+                            workspace=lease.workspace,
+                            asset=asset,
+                            publication=TitleViewPublication(
+                                session_id=lease.session_id,
+                                platform=candidate.platform,
+                                source_id=candidate.source_id,
+                                source_title=candidate.title,
+                                media_unit_title=unit.title,
+                            ),
                         )
+                        if recorded is not None:
+                            current = recorded
                     else:
                         published = asset.model_copy(
                             update={"display_relative_path": None}
                         )
-                    if published != asset:
+                    if unit.source_role != "primary" and published != asset:
                         current = self._manifest.record_asset(
                             lease.workspace,
                             lease.session_id,

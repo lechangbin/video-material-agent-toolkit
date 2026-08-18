@@ -169,3 +169,13 @@ class AssetRecord(_Record):
     duration_seconds: float | None = Field(default=None, ge=0)
     width: int | None = Field(default=None, ge=1)
     height: int | None = Field(default=None, ge=1)
+
+
+class TitleViewPublication(_Record):
+    """Identity and readable metadata needed to publish one title view."""
+
+    session_id: str
+    platform: Platform
+    source_id: str
+    source_title: str
+    media_unit_title: str
