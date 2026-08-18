@@ -182,7 +182,12 @@ class WorkspaceAssetStore:
             target = target_directory / filename
             if os.name != "nt" or len(str(target)) <= _WINDOWS_MAX_TARGET_LENGTH:
                 break
-            if source_title_limit > _MIN_HASHED_TITLE_LENGTH or (
+            if source_identity_limit > 0 or media_identity_limit > 0:
+                if source_identity_limit >= media_identity_limit:
+                    source_identity_limit = max(0, source_identity_limit - 1)
+                else:
+                    media_identity_limit = max(0, media_identity_limit - 1)
+            elif source_title_limit > _MIN_HASHED_TITLE_LENGTH or (
                 media_title_limit > _MIN_HASHED_TITLE_LENGTH
             ):
                 if source_title_limit >= media_title_limit:
@@ -195,11 +200,6 @@ class WorkspaceAssetStore:
                         _MIN_HASHED_TITLE_LENGTH,
                         media_title_limit - 1,
                     )
-            elif source_identity_limit > 0 or media_identity_limit > 0:
-                if source_identity_limit >= media_identity_limit:
-                    source_identity_limit = max(0, source_identity_limit - 1)
-                else:
-                    media_identity_limit = max(0, media_identity_limit - 1)
             else:
                 break
         relative_path = target.relative_to(self.workspace).as_posix()

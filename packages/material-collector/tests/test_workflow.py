@@ -827,11 +827,12 @@ async def test_primary_proxy_is_published_through_title_material_view(
     assert display.read_bytes() == (workspace / asset.relative_path).read_bytes()
     assert display.parts[-3].startswith("城市_更新")
     assert "--" in display.parts[-3]
-    assert display.parts[-3].endswith("__bilibili__bilibili_s--31c56064")
+    assert "__bilibili__" in display.parts[-3]
+    assert display.parts[-3].endswith("--31c56064")
     assert display.parts[-2] == "low-proxy"
     assert display.name.startswith("城市_更新")
     assert "--" in display.name
-    assert display.name.endswith("__bilibili_s--00e934af.mp4")
+    assert display.name.endswith("--00e934af.mp4")
     result_path = (
         workspace
         / ".material-collector"

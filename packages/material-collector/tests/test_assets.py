@@ -248,6 +248,7 @@ def test_title_view_shrinks_identity_hints_when_workspace_path_is_long(
     assert published.display_relative_path is not None
     display = store.workspace / published.display_relative_path
     assert display.is_file()
+    assert display.parts[-3].startswith("bilibili 测试素材__bilibili__")
     if os.name == "nt":
         assert len(str(display)) <= 259
 
