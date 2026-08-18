@@ -450,6 +450,13 @@ def run_command(
             help="Progress format written to stderr.",
         ),
     ] = ProgressFormat.JSONL,
+    show_search_browsers: Annotated[
+        bool,
+        typer.Option(
+            "--show-search-browsers",
+            help="Show one identifiable search window per in-scope platform.",
+        ),
+    ] = False,
 ) -> None:
     """Create a session and run collection to its next durable checkpoint."""
 
@@ -471,7 +478,11 @@ def run_command(
         session = _application().create_session(request)
         return await _workflow(
             progress=_CliProgressReporter(progress_format)
-        ).run(workspace, session.session_id)
+        ).run(
+            workspace,
+            session.session_id,
+            show_search_browsers=show_search_browsers,
+        )
 
     _execute_async(operation, exit_code=_workflow_exit_code)
 
@@ -494,13 +505,24 @@ def resume_command(
             help="Progress format written to stderr.",
         ),
     ] = ProgressFormat.JSONL,
+    show_search_browsers: Annotated[
+        bool,
+        typer.Option(
+            "--show-search-browsers",
+            help="Show search windows for this resume execution only.",
+        ),
+    ] = False,
 ) -> None:
     """Resume from the first uncommitted stage."""
 
     _execute_async(
         lambda: _workflow(
             progress=_CliProgressReporter(progress_format)
-        ).run(workspace, session_id),
+        ).run(
+            workspace,
+            session_id,
+            show_search_browsers=show_search_browsers,
+        ),
         exit_code=_workflow_exit_code,
     )
 

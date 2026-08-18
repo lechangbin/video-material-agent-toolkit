@@ -34,6 +34,7 @@ from material_collector.core.media import (
     SearchRequest,
 )
 from material_collector.infrastructure.assets import WorkspaceAssetStoreFactory
+from material_collector.infrastructure.platforms.errors import PlatformAdapterError
 from material_collector.infrastructure.session_runtime_store import (
     SqliteSessionRuntime as SessionRuntime,
 )
@@ -214,6 +215,7 @@ class _Platform:
         self.seen_timeouts: list[int] = []
         self.seen_search_limits: list[int] = []
         self.seen_channels: list[BrowserChannel] = []
+        self.seen_search_visibility: list[bool] = []
 
     async def search(
         self,
@@ -222,6 +224,7 @@ class _Platform:
     ) -> SearchBatch:
         self.seen_timeouts.append(context.request_timeout_seconds)
         self.seen_channels.append(context.browser_channel)
+        self.seen_search_visibility.append(context.show_search_browser)
         self.seen_search_limits.append(request.limit)
         self.search_count += 1
         if self.search_failures:
@@ -622,6 +625,99 @@ async def test_workflow_resume_reuses_frozen_channel_instead_of_auto(
     await workflow.run(workspace, session_id)
 
     assert authentication.requested_channels == [BrowserChannel.EDGE]
+
+
+@pytest.mark.asyncio
+async def test_visible_search_close_retains_commits_and_resume_replays_only_unfinished(
+    tmp_path: Path,
+) -> None:
+    workspace, session_id = _create_session(tmp_path, add_bilibili_query=True)
+
+    class ClosingSearch(_Platform):
+        def __init__(self) -> None:
+            super().__init__(Platform.BILIBILI)
+            self.attempts = 0
+
+        async def search(
+            self,
+            request: SearchRequest,
+            context: PlatformContext,
+        ) -> SearchBatch:
+            self.attempts += 1
+            if self.attempts == 2:
+                self.seen_search_visibility.append(context.show_search_browser)
+                raise PlatformAdapterError(
+                    "search_browser_closed",
+                    "The visible search browser was closed.",
+                    platform=Platform.BILIBILI,
+                    operation="search",
+                    retryable=True,
+                )
+            return await super().search(request, context)
+
+    closing = ClosingSearch()
+    adapters = {platform: _Platform(platform) for platform in PLATFORM_ORDER}
+    adapters[Platform.BILIBILI] = closing
+    workflow = _make_workflow(
+        _Authentication(),
+        adapters,
+        SessionRuntime(lease_ttl_seconds=900),
+    )
+
+    with pytest.raises(CollectorError) as captured:
+        await workflow.run(workspace, session_id, show_search_browsers=True)
+
+    assert captured.value.code == "search_browser_closed"
+    committed = SourceManifestApplication(store=SqliteSourceManifestStore()).export(
+        workspace,
+        session_id,
+    )
+    assert {candidate.platform for candidate in committed.candidates} == set(PLATFORM_ORDER)
+    session = SessionApplication(store=SqliteSessionStore()).get_session(
+        workspace,
+        session_id,
+    )
+    assert "show_search" not in str(session.model_dump()).lower()
+
+    result = await workflow.run(workspace, session_id, show_search_browsers=True)
+
+    assert result.status == "integration_required"
+    assert closing.attempts == 3
+    assert closing.seen_search_visibility == [True, True, True]
+
+
+@pytest.mark.asyncio
+async def test_visible_multi_platform_search_still_starts_concurrently(
+    tmp_path: Path,
+) -> None:
+    workspace, session_id = _create_session(tmp_path)
+    started: set[Platform] = set()
+    all_started = asyncio.Event()
+
+    class ConcurrentSearch(_Platform):
+        async def search(
+            self,
+            request: SearchRequest,
+            context: PlatformContext,
+        ) -> SearchBatch:
+            assert context.show_search_browser is True
+            started.add(self.platform)
+            if started == set(PLATFORM_ORDER):
+                all_started.set()
+            await asyncio.wait_for(all_started.wait(), timeout=1)
+            return await super().search(request, context)
+
+    adapters = {platform: ConcurrentSearch(platform) for platform in PLATFORM_ORDER}
+    workflow = _make_workflow(
+        _Authentication(),
+        adapters,
+        SessionRuntime(lease_ttl_seconds=900),
+    )
+
+    result = await workflow.run(workspace, session_id, show_search_browsers=True)
+
+    assert result.status == "integration_required"
+    assert started == set(PLATFORM_ORDER)
 
 
 @pytest.mark.asyncio

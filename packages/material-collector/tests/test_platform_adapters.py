@@ -946,9 +946,15 @@ class _RecordingNetworkBackend(httpcore.AsyncNetworkBackend):
 
 
 @pytest.mark.asyncio
-async def test_platform_browser_explicitly_bypasses_system_proxy(
+@pytest.mark.parametrize(
+    ("visible", "expected_headless"),
+    [(False, True), (True, False)],
+)
+async def test_platform_browser_visibility_is_execution_scoped(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    visible: bool,
+    expected_headless: bool,
 ) -> None:
     launches: list[tuple[Path, dict[str, object]]] = []
 
@@ -981,16 +987,125 @@ async def test_platform_browser_explicitly_bypasses_system_proxy(
     context = PlatformContext(
         auth_profile="editing",
         browser_channel=BrowserChannel.EDGE,
+        show_search_browser=visible,
     )
-    async with transport._open_context(Platform.BILIBILI, context):
+    async with transport._open_context(Platform.BILIBILI, context, visible=visible):
         pass
 
     profile_path, launch = launches[0]
     assert profile_path == tmp_path / "editing" / "edge" / "bilibili"
     assert launch["channel"] == "msedge"
     assert launch["args"] == ["--no-proxy-server"]
-    assert launch["headless"] is True
+    assert launch["headless"] is expected_headless
     assert launch["chromium_sandbox"] is True
+
+
+@pytest.mark.asyncio
+async def test_visible_search_window_close_is_structured_and_never_reopens_headless(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    launches: list[dict[str, object]] = []
+    scripts: list[str] = []
+
+    class FakePending:
+        async def __aenter__(self) -> Self:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            del args
+
+        @property
+        async def value(self) -> object:
+            raise AssertionError("a closed page cannot produce a response")
+
+    class ClosedPage:
+        def __init__(self) -> None:
+            self._closed = False
+            self._close_callbacks: list[Any] = []
+
+        async def add_init_script(self, script: str) -> None:
+            scripts.append(script)
+
+        def on(self, event: str, callback: Any) -> None:
+            assert event == "close"
+            self._close_callbacks.append(callback)
+
+        def expect_response(self, *args: object, **kwargs: object) -> FakePending:
+            del args, kwargs
+            return FakePending()
+
+        async def goto(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+            self._closed = True
+            for callback in self._close_callbacks:
+                callback(self)
+            raise RuntimeError("private browser path must not escape")
+
+        def is_closed(self) -> bool:
+            return self._closed
+
+    class FakeContext:
+        async def new_page(self) -> ClosedPage:
+            return ClosedPage()
+
+        async def close(self) -> None:
+            return None
+
+    class FakeChromium:
+        async def launch_persistent_context(
+            self,
+            user_data_dir: Path,
+            **kwargs: object,
+        ) -> FakeContext:
+            del user_data_dir
+            launches.append(kwargs)
+            return FakeContext()
+
+    class FakePlaywrightManager:
+        async def __aenter__(self) -> Any:
+            return type("FakePlaywright", (), {"chromium": FakeChromium()})()
+
+        async def __aexit__(self, *args: object) -> None:
+            del args
+
+    monkeypatch.setattr(
+        "material_collector.infrastructure.platforms.transport.async_playwright",
+        FakePlaywrightManager,
+    )
+    context = PlatformContext(
+        auth_profile="editing",
+        browser_channel=BrowserChannel.EDGE,
+        show_search_browser=True,
+    )
+
+    with pytest.raises(PlatformAdapterError) as captured:
+        await PlaywrightPlatformTransport(auth_root=tmp_path).capture_json(
+            "https://www.bilibili.com/search",
+            "/api/search",
+            platform=Platform.BILIBILI,
+            operation="search",
+            context=context,
+        )
+
+    assert captured.value.code == "search_browser_closed"
+    assert captured.value.details == {
+        "platform": "bilibili",
+        "operation": "search",
+        "retryable": True,
+    }
+    assert launches == [
+        {
+            "channel": "msedge",
+            "headless": False,
+            "chromium_sandbox": True,
+            "args": ["--no-proxy-server"],
+        }
+    ]
+    assert len(scripts) == 1
+    assert "Material Collector" in scripts[0]
+    assert "bilibili" in scripts[0]
+    assert "private browser path" not in str(captured.value.details)
 
 
 @pytest.mark.asyncio

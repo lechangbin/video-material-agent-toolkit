@@ -102,8 +102,10 @@ def test_long_running_commands_expose_progress_format_options() -> None:
     assert run_help.exit_code == 0
     assert "--progress-format" in run_help.stdout
     assert "--browser-channel" in run_help.stdout
+    assert "--show-search-browsers" in run_help.stdout
     assert resume_help.exit_code == 0
     assert "--progress-format" in resume_help.stdout
+    assert "--show-search-browsers" in resume_help.stdout
 
 
 def test_contracts_normalize_uses_the_session_creation_contracts(
@@ -407,7 +409,14 @@ def test_run_can_render_human_readable_progress_without_polluting_stdout(
         def __init__(self, progress: Any) -> None:
             self._progress = progress
 
-        async def run(self, workspace: Path, session_id: str) -> WorkflowResult:
+        async def run(
+            self,
+            workspace: Path,
+            session_id: str,
+            *,
+            show_search_browsers: bool = False,
+        ) -> WorkflowResult:
+            assert show_search_browsers is True
             self._progress.report("search_started", {"segment_id": "seg_001"})
             return WorkflowResult(
                 session_id=session_id,
@@ -438,6 +447,7 @@ def test_run_can_render_human_readable_progress_without_polluting_stdout(
             str(plans_path),
             "--progress-format",
             "text",
+            "--show-search-browsers",
         ],
     )
 
@@ -461,7 +471,14 @@ def test_run_status_and_sessions_list_share_the_application_module(
         def __init__(self, *, progress: Any) -> None:
             self._progress = progress
 
-        async def run(self, workspace: Path, session_id: str) -> WorkflowResult:
+        async def run(
+            self,
+            workspace: Path,
+            session_id: str,
+            *,
+            show_search_browsers: bool = False,
+        ) -> WorkflowResult:
+            assert show_search_browsers is False
             self._progress.report("search_started", {"segment_id": "seg_001"})
             SessionApplication(store=SqliteSessionStore()).freeze_browser_channel(
                 workspace,

@@ -216,6 +216,8 @@ class PlaywrightPlatformTransport:
         self,
         platform: Platform,
         context: PlatformContext,
+        *,
+        visible: bool = False,
     ) -> AsyncIterator[BrowserContext]:
         profile_path = self._profile_path(
             context.auth_profile,
@@ -227,7 +229,7 @@ class PlaywrightPlatformTransport:
             browser = await playwright.chromium.launch_persistent_context(
                 user_data_dir=profile_path,
                 channel=_PLAYWRIGHT_CHANNEL[context.browser_channel],
-                headless=self._headless,
+                headless=self._headless and not visible,
                 chromium_sandbox=True,
                 args=list(_DIRECT_CHROMIUM_ARGS),
             )
@@ -247,9 +249,25 @@ class PlaywrightPlatformTransport:
     ) -> Mapping[str, Any]:
         timeout_ms = context.request_timeout_seconds * 1000
         timeout_phase: _CaptureTimeoutPhase = "navigation"
+        page: Any | None = None
+        search_browser_closed = False
+        visible = operation == "search" and context.show_search_browser
         try:
-            async with self._open_context(platform, context) as browser:
+            browser_context = (
+                self._open_context(platform, context, visible=True)
+                if visible
+                else self._open_context(platform, context)
+            )
+            async with browser_context as browser:
                 page = await browser.new_page()
+                if visible:
+                    await _identify_visible_search_page(page, platform)
+
+                    def mark_search_browser_closed(_page: Any) -> None:
+                        nonlocal search_browser_closed
+                        search_browser_closed = True
+
+                    page.on("close", mark_search_browser_closed)
                 try:
                     warmup_url = _CAPTURE_WARMUP_URLS.get(platform)
                     if warmup_url is not None:
@@ -308,6 +326,16 @@ class PlaywrightPlatformTransport:
                 retryable=True,
             ) from exc
         except Exception as exc:
+            if visible and page is not None and (
+                search_browser_closed or page.is_closed()
+            ):
+                raise PlatformAdapterError(
+                    "search_browser_closed",
+                    "The visible search browser was closed.",
+                    platform=platform,
+                    operation=operation,
+                    retryable=True,
+                ) from exc
             raise PlatformAdapterError(
                 "platform_transport_failed",
                 "The authenticated browser operation failed.",
@@ -326,7 +354,6 @@ class PlaywrightPlatformTransport:
                 details={"field": "$"},
             )
         return payload
-
     async def resolve_url(
         self,
         url: str,
@@ -459,6 +486,26 @@ class PlaywrightPlatformTransport:
                 retryable=True,
                 details={"exception_type": type(exc).__name__},
             ) from exc
+
+
+async def _identify_visible_search_page(page: Any, platform: Platform) -> None:
+    label = f"Material Collector · {platform.value} · "
+    await page.add_init_script(
+        f"""
+        (() => {{
+          const label = {label!r};
+          window.name = `material-collector-search-{platform.value}`;
+          window.addEventListener('DOMContentLoaded', () => {{
+            const update = () => {{
+              if (!document.title.startsWith(label)) document.title = label + document.title;
+            }};
+            update();
+            const title = document.querySelector('title');
+            if (title) new MutationObserver(update).observe(title, {{childList: true}});
+          }});
+        }})();
+        """
+    )
 
 
 async def _capture_timeout_error(

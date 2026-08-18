@@ -35,6 +35,12 @@ Chrome，需要登录时打开所选浏览器的有头窗口，随后固定使�
 来源都会写入会话的 `collection-result.json`；代理媒体以 SHA-256 内容寻址保存在
 长期素材工作区，后续恢复不会重复已提交阶段。
 
+搜索浏览器默认隐藏。`run` 或 `resume` 可为当前一次执行传入
+`--show-search-browsers`，并发显示每个平台带有 `Material Collector · <platform>`
+标题的独立窗口；该开关不会写入 session，也不会改变冻结的 Edge/Chrome 通道。
+关闭任一可见搜索窗口会以可恢复错误 `search_browser_closed` 中断当前执行，其他平台
+已安全提交的结果继续保留；程序不会在同一次执行中静默切回隐藏模式。
+
 超过 20 分钟或时长未知的视频只记录稳定链接并进入人工复核，不自动送入视频理解。
 查找下载 CLI 在真实搜索和代理下载结束后以退出码 `20` 到达
 `integration_required` 检查点。它明确表示“采集完成、等待外部集成”，不会在
@@ -83,6 +89,7 @@ uv run material-collector run `
   --input .\examples\collection-input.json `
   --query-plans .\examples\query-plans.json `
   --browser-channel auto `
+  --show-search-browsers `
   --request-timeout-seconds 30 `
   --progress-format jsonl
 ```
@@ -102,6 +109,7 @@ uv run material-collector sessions list `
 uv run material-collector resume `
   --workspace D:\video-materials `
   --session-id <session-id> `
+  --show-search-browsers `
   --progress-format text
 
 uv run material-collector result export `
@@ -113,6 +121,7 @@ uv run material-collector result export `
 时冻结；恢复会话继续使用同一个值。`--progress-format` 只改变当前命令写入
 `stderr` 的进度格式：默认 `jsonl` 适合 Agent，`text` 适合人类观察，不会污染
 `stdout` 的单个最终 JSON。
+`--show-search-browsers` 同样只影响当前命令；省略时搜索始终恢复为默认隐藏行为。
 
 `status` 和 `cancel` 额外返回 `runtime`，包含取消状态、租约 owner、到期时间、
 是否已经过期和下一阶段。执行租约默认 60 秒；活执行器在认证、搜索、解析和下载等

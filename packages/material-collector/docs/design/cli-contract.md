@@ -43,9 +43,9 @@ Skill 中复制文本规范化、安全 ID、引用和去重规则。
 ### 会话生命周期
 
 ```text
-material-collector run --workspace <path> --input <path> --query-plans <path> [--max-rounds <n>] [--max-videos <n>] [--auth-profile <id>] [--browser-channel auto|edge|chrome] [--auth-wait-seconds <seconds>] [--request-timeout-seconds <seconds>] [--progress-format jsonl|text]
+material-collector run --workspace <path> --input <path> --query-plans <path> [--max-rounds <n>] [--max-videos <n>] [--auth-profile <id>] [--browser-channel auto|edge|chrome] [--show-search-browsers] [--auth-wait-seconds <seconds>] [--request-timeout-seconds <seconds>] [--progress-format jsonl|text]
 material-collector status --workspace <path> --session-id <id>
-material-collector resume --workspace <path> --session-id <id> [--progress-format jsonl|text]
+material-collector resume --workspace <path> --session-id <id> [--show-search-browsers] [--progress-format jsonl|text]
 material-collector cancel --workspace <path> --session-id <id>
 material-collector sessions list --workspace <path>
 ```
@@ -67,6 +67,11 @@ material-collector sessions list --workspace <path>
 - `run` 和 `resume` 的 `--progress-format` 只控制当前 CLI 进程写入 `stderr`
   的进度表现形式，不属于业务约束，也不固化进会话；默认值为 `jsonl`，
   `text` 用于人类直接观察。
+- 搜索默认隐藏；`--show-search-browsers` 只显示当前执行中每个在范围平台的可识别
+  窗口，不固化进会话，也不改变已冻结浏览器通道。多平台仍并发执行。
+- 关闭可见搜索窗口返回该平台的 `search_browser_closed`，等待其他并发平台到达安全
+  提交点后中断当前执行；已提交结果保留，未完成操作由后续显式 `resume` 重试。同一
+  执行绝不因窗口关闭而切换为 headless。
 - 外部视频理解和落库决策文件的 schema 尚未提供，第一版 `resume` 只恢复内部阶段；
   `--decision` 保留到接口冻结后实现，当前不会静默接收未知决策文件。
 - `sessions list` 只扫描指定素材工作区，不依赖或创建应用级全局索引。
@@ -167,5 +172,7 @@ material-collector media fetch-hq --workspace <path> --session-id <id> --media-u
 - `browser_channel_failed` 和 `browser_channel_exhausted` 属于退出码 `30`；错误尝试只含
   通道、`unavailable|launch|navigation|desktop|window_verification` 阶段、规范化原因和
   所需动作，不输出浏览器路径或启动命令。
+- `search_browser_closed` 属于退出码 `30`，调用方可重新执行 `resume`；是否再次显示
+  搜索窗口由新的执行参数决定，而不是会话状态。
 - 具体业务状态和错误细节始终以最终 JSON 的 `status`、`action_required` 和结构化 `error` 为准。
 - 新增退出码不得改变已冻结数字的含义。

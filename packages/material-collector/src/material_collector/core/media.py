@@ -53,6 +53,7 @@ class PlatformContext(_Record):
     auth_profile: str
     browser_channel: BrowserChannel = BrowserChannel.CHROME
     request_timeout_seconds: int = Field(default=30, ge=1)
+    show_search_browser: bool = False
 
     @field_validator("browser_channel")
     @classmethod

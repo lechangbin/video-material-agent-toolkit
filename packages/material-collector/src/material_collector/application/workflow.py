@@ -160,7 +160,13 @@ class CollectionWorkflow:
         _require_platform_adapters(self._source_resolvers, "source resolver")
         _require_platform_adapters(self._media_fetchers, "media fetcher")
 
-    async def run(self, workspace: Path, session_id: str) -> WorkflowResult:
+    async def run(
+        self,
+        workspace: Path,
+        session_id: str,
+        *,
+        show_search_browsers: bool = False,
+    ) -> WorkflowResult:
         """Continue one session until external integration or human review is needed."""
 
         session = self._sessions.get_session(workspace, session_id)
@@ -196,6 +202,7 @@ class CollectionWorkflow:
                 auth_profile=session.constraints.auth_profile,
                 browser_channel=session.selected_browser_channel,
                 request_timeout_seconds=session.constraints.request_timeout_seconds,
+                show_search_browser=show_search_browsers,
             )
             lease, search_issues = await self._run_search(
                 lease,
@@ -552,6 +559,16 @@ class CollectionWorkflow:
                     fatal_auth.message,
                     details=fatal_auth.details,
                 )
+            closed_browser = next(
+                (issue for issue in issues if issue.code == "search_browser_closed"),
+                None,
+            )
+            if closed_browser is not None:
+                raise CollectorError(
+                    closed_browser.code,
+                    closed_browser.message,
+                    details=closed_browser.details,
+                )
             retryable = [issue for issue in issues if _issue_is_retryable(issue)]
             if retryable and completed_batches == 0:
                 raise _workflow_retryable_error(
@@ -783,6 +800,7 @@ class CollectionWorkflow:
                 if isinstance(error, CollectorError) and (
                     error.code in _AUTH_ACCESS_ERROR_CODES
                     or error.code.startswith("auth_")
+                    or error.code == "search_browser_closed"
                 ):
                     break
         return completed, tuple(issues)
