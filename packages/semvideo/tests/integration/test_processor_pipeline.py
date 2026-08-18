@@ -4,8 +4,8 @@ import json
 from pathlib import Path
 
 import pytest
-
 from semvideo.adapters.ffmpeg import FfmpegError, MediaFacts, VideoStreamFacts
+from semvideo.application.execution_config import FrozenExecutionConfig
 from semvideo.application.processor import export_segment, export_shot, run_job
 from semvideo.application.source_store import (
     register_source,
@@ -14,17 +14,23 @@ from semvideo.application.source_store import (
 )
 from semvideo.application.task_store import TaskStore
 from semvideo.application.workspace import initialize_workspace
-from semvideo.modules.evidence.models import (
-    ContactSheet,
-    DedupDecision,
-    EvidenceFrame,
-    EvidenceTimeline,
+from semvideo.config import load_workspace_config
+from semvideo.errors import (
+    ErrorCategory,
+    RecoveryAction,
+    SemvideoError,
 )
 from semvideo.modules.cinematography.models import (
     CameraMotion,
     CinematographyAnnotation,
     CinematographyResponse,
     ShotScale,
+)
+from semvideo.modules.evidence.models import (
+    ContactSheet,
+    DedupDecision,
+    EvidenceFrame,
+    EvidenceTimeline,
 )
 from semvideo.modules.media.models import (
     CandidateBoundary,
@@ -37,11 +43,6 @@ from semvideo.modules.semantics.models import (
     ModelUsage,
     SegmentationResponse,
     SemanticSegment,
-)
-from semvideo.errors import (
-    ErrorCategory,
-    RecoveryAction,
-    SemvideoError,
 )
 
 
@@ -168,9 +169,7 @@ class FakeEvidenceAdapter:
         **kwargs,
     ) -> EvidenceTimeline:
         type(self).extract_sources.append(source)
-        type(self).transcript_sources.append(
-            kwargs.get("transcript_source", source)
-        )
+        type(self).transcript_sources.append(kwargs.get("transcript_source", source))
         frame_dir = output_dir / "frames"
         sheet_dir = output_dir / "contact-sheets"
         frame_dir.mkdir(parents=True, exist_ok=True)
@@ -360,6 +359,9 @@ def _prepare_pipeline_job(tmp_path: Path, monkeypatch):
     job = store.create_job(
         source_video_id=source["source_video_id"],
         request={"overrides": {"render_final_segments": False}},
+        **FrozenExecutionConfig.freeze(
+            load_workspace_config(workspace.data)
+        ).as_job_fields(),
     )
     store.write_state(
         job["job_id"],
@@ -415,16 +417,12 @@ def test_pipeline_analyzes_4k_proxy_but_exports_original(
     run_job(workspace, store, job["job_id"], "attempt_test")
 
     job_root = store.job_path(job["job_id"])
-    facts = json.loads(
-        (job_root / "media" / "facts.json").read_text(encoding="utf-8")
-    )
+    facts = json.loads((job_root / "media" / "facts.json").read_text(encoding="utf-8"))
     assert facts["analysis_media"]["kind"] == "analysis_proxy"
     assert facts["analysis_media"]["policy"]["max_height"] == 720
     source_video_id = str(store.read_job(job["job_id"])["source_video_id"])
     analysis_source = (
-        workspace.sources
-        / source_video_id
-        / facts["analysis_media"]["relative_path"]
+        workspace.sources / source_video_id / facts["analysis_media"]["relative_path"]
     )
     original_source, _ = resolve_source(workspace, source_video_id)
     assert FourKMediaAnalyzer.segment_sources == [analysis_source]
@@ -550,13 +548,9 @@ def test_invalid_model_responses_are_audited_after_repair_exhaustion(
         and json.loads(path.read_text(encoding="utf-8")).get("purpose")
         == "semantic_segmentation"
     )
-    model_run_id = json.loads(
-        run_file.read_text(encoding="utf-8")
-    )["model_run_id"]
+    model_run_id = json.loads(run_file.read_text(encoding="utf-8"))["model_run_id"]
     raw_file = next(
-        path
-        for path in model_run_files
-        if path.name == f"{model_run_id}.raw.json"
+        path for path in model_run_files if path.name == f"{model_run_id}.raw.json"
     )
     run = json.loads(run_file.read_text(encoding="utf-8"))
     raw = json.loads(raw_file.read_text(encoding="utf-8"))
@@ -599,13 +593,9 @@ def test_final_provider_failure_creates_failed_model_run(
         and json.loads(path.read_text(encoding="utf-8")).get("purpose")
         == "semantic_segmentation"
     )
-    model_run_id = json.loads(
-        run_file.read_text(encoding="utf-8")
-    )["model_run_id"]
+    model_run_id = json.loads(run_file.read_text(encoding="utf-8"))["model_run_id"]
     raw_file = next(
-        path
-        for path in model_run_files
-        if path.name == f"{model_run_id}.raw.json"
+        path for path in model_run_files if path.name == f"{model_run_id}.raw.json"
     )
     run = json.loads(run_file.read_text(encoding="utf-8"))
     raw = json.loads(raw_file.read_text(encoding="utf-8"))
@@ -686,6 +676,9 @@ def test_formal_pipeline_and_lazy_export(tmp_path, monkeypatch) -> None:
     job = store.create_job(
         source_video_id=source["source_video_id"],
         request={"overrides": {"render_final_segments": False}},
+        **FrozenExecutionConfig.freeze(
+            load_workspace_config(workspace.data)
+        ).as_job_fields(),
     )
     store.write_state(
         job["job_id"],
@@ -725,9 +718,7 @@ def test_formal_pipeline_and_lazy_export(tmp_path, monkeypatch) -> None:
     assert (job_root / "manifest.json").is_file()
     assert (job_root / "retrieval" / "segments.jsonl").is_file()
     assert (job_root / "reports" / "inspection.html").is_file()
-    manifest = json.loads(
-        (job_root / "manifest.json").read_text(encoding="utf-8")
-    )
+    manifest = json.loads((job_root / "manifest.json").read_text(encoding="utf-8"))
     model_run = json.loads(
         next(
             path
@@ -739,12 +730,9 @@ def test_formal_pipeline_and_lazy_export(tmp_path, monkeypatch) -> None:
         artifact["artifact_id"] for artifact in manifest["artifacts"]
     }
     cinematography_index = json.loads(
-        (
-            job_root
-            / "evidence"
-            / "cinematography"
-            / "index.json"
-        ).read_text(encoding="utf-8")
+        (job_root / "evidence" / "cinematography" / "index.json").read_text(
+            encoding="utf-8"
+        )
     )
     referenced_cinematography_evidence = {
         frame["path"]
@@ -755,9 +743,7 @@ def test_formal_pipeline_and_lazy_export(tmp_path, monkeypatch) -> None:
         for shot in cinematography_index["shots"]
         for contact_sheet_path in shot["contact_sheet_paths"]
     }
-    manifest_paths = {
-        artifact["path"] for artifact in manifest["artifacts"]
-    }
+    manifest_paths = {artifact["path"] for artifact in manifest["artifacts"]}
     assert referenced_cinematography_evidence <= manifest_paths
 
     window = json.loads(
@@ -871,7 +857,7 @@ def test_lazy_export_preserves_render_error_when_temp_cleanup_is_rejected(
     assert raised.value.payload.details["reason"] == "render failed"
 
 
-def test_worker_and_lazy_export_use_configured_media_executables(
+def test_worker_uses_frozen_config_while_lazy_export_uses_current_config(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -912,8 +898,8 @@ def test_worker_and_lazy_export_use_configured_media_executables(
 
     assert created_with == [
         {
-            "ffmpeg_path": "C:/tools/ffmpeg.exe",
-            "ffprobe_path": "C:/tools/ffprobe.exe",
+            "ffmpeg_path": "ffmpeg",
+            "ffprobe_path": "ffprobe",
         },
         {
             "ffmpeg_path": "C:/tools/ffmpeg.exe",

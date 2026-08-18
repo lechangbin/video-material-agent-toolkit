@@ -39,3 +39,16 @@ jobs:
         with:
           name: video-material-agent-toolkit-wheels
           path: dist/*
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate Compose configuration
+        run: docker compose config --quiet
+      - name: Build toolkit image
+        run: docker build --tag video-material-agent-toolkit:test .
+      - name: Smoke-test both CLIs
+        run: |
+          docker run --rm video-material-agent-toolkit:test material-collector --help
+          docker run --rm video-material-agent-toolkit:test semvideo --version --json

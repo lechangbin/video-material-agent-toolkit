@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from material_collector.application.sessions import (
+    SESSION_SCHEMA_VERSION,
     CreateSessionRequest,
     RuntimeConstraints,
     SessionApplication,
@@ -22,8 +23,10 @@ from material_collector.core.contracts import CollectionInput, QueryPlans
 from material_collector.core.errors import (
     ContractError,
     SessionStateError,
+    SessionVersionError,
     WorkspaceError,
 )
+from material_collector.core.media import BrowserChannel, Platform
 from material_collector.infrastructure.session_store import SqliteSessionStore
 
 FIXED_NOW = datetime(2026, 7, 29, 12, 0, tzinfo=UTC)
@@ -43,7 +46,8 @@ def collection_document() -> dict[str, Any]:
 
 def query_plan_document() -> dict[str, Any]:
     return {
-        "schema_version": "1.0",
+        "schema_version": "2.0",
+        "platform_scope": ["bilibili", "douyin", "xiaohongshu"],
         "plans": [
             {
                 "segment_id": "seg_a",
@@ -144,6 +148,7 @@ def test_application_accepts_a_store_adapter_without_touching_files(
         input_sha256="a" * 64,
         query_plans_snapshot_path="input/query-plans.json",
         query_plans_sha256="b" * 64,
+        platform_scope=(Platform.BILIBILI, Platform.DOUYIN, Platform.XIAOHONGSHU),
         constraints=RuntimeConstraints(),
         segments=(),
         warnings=(),
@@ -186,6 +191,16 @@ def test_application_accepts_a_store_adapter_without_touching_files(
                 f"unexpected frozen read: {received_workspace} {session_id}"
             )
 
+        def freeze_browser_channel(
+            self,
+            received_workspace: Path,
+            session_id: str,
+            channel: BrowserChannel,
+        ) -> SessionView:
+            raise AssertionError(
+                f"unexpected browser freeze: {received_workspace} {session_id} {channel}"
+            )
+
     application = SessionApplication(store=InMemorySessionStore())
 
     assert application.create_session(request) is session
@@ -212,6 +227,8 @@ def test_create_session_freezes_documents_and_initializes_sqlite(
     assert created.constraints.max_rounds == 4
     assert created.constraints.auth_profile == "editing"
     assert created.constraints.request_timeout_seconds == 45
+    assert created.constraints.browser_channel is BrowserChannel.AUTO
+    assert created.selected_browser_channel is None
     assert [segment.status for segment in created.segments] == ["planned", "planned"]
     assert input_snapshot.is_file()
     assert plans_snapshot.is_file()
@@ -226,11 +243,40 @@ def test_create_session_freezes_documents_and_initializes_sqlite(
     assert loaded.input_sha256 == created.input_sha256
     assert loaded.constraints.request_timeout_seconds == 45
     assert json.loads(input_snapshot.read_text(encoding="utf-8"))["schema_version"] == "1.0"
-
     with sqlite3.connect(session_dir / "session.sqlite3") as connection:
         assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert (
+            connection.execute("PRAGMA user_version").fetchone()[0]
+            == SESSION_SCHEMA_VERSION
+        )
 
+
+def test_session_freezes_the_first_successful_browser_channel(tmp_path: Path) -> None:
+    workspace = tmp_path / "materials"
+    application = deterministic_application("ses_browser_001")
+    created = application.create_session(create_request(tmp_path, workspace))
+
+    frozen = application.freeze_browser_channel(
+        workspace,
+        created.session_id,
+        BrowserChannel.EDGE,
+    )
+
+    assert frozen.selected_browser_channel is BrowserChannel.EDGE
+    assert (
+        application.freeze_browser_channel(
+            workspace,
+            created.session_id,
+            BrowserChannel.EDGE,
+        ).selected_browser_channel
+        is BrowserChannel.EDGE
+    )
+    with pytest.raises(SessionStateError):
+        application.freeze_browser_channel(
+            workspace,
+            created.session_id,
+            BrowserChannel.CHROME,
+        )
 
 def test_invalid_input_does_not_create_workspace_or_session(tmp_path: Path) -> None:
     workspace = tmp_path / "materials"
@@ -296,7 +342,7 @@ def test_sessions_are_isolated_and_listed_only_in_explicit_workspace(
     assert [item.session_id for item in second_list.sessions] == [other.session_id]
 
 
-def test_version_one_session_remains_readable_with_default_request_timeout(
+def test_version_one_session_is_rejected_without_migration(
     tmp_path: Path,
 ) -> None:
     workspace = tmp_path / "materials"
@@ -318,9 +364,19 @@ def test_version_one_session_remains_readable_with_default_request_timeout(
         )
         connection.execute("PRAGMA user_version = 1")
 
-    loaded = application.get_session(workspace, created.session_id)
+    with pytest.raises(SessionVersionError) as captured:
+        application.get_session(workspace, created.session_id)
 
-    assert loaded.constraints.request_timeout_seconds == 30
+    assert captured.value.details == {
+        "session_id": created.session_id,
+        "received_version": 1,
+        "supported_versions": [SESSION_SCHEMA_VERSION],
+    }
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT schema_version FROM schema_info WHERE singleton = 1"
+        ).fetchone()[0] == 1
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
 
 
 def test_unsafe_session_id_cannot_escape_workspace(tmp_path: Path) -> None:

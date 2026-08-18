@@ -19,6 +19,7 @@ from material_collector.application.ports import (
     SourceResolver,
 )
 from material_collector.core.media import (
+    BrowserChannel,
     FetchRequest,
     MediaQuality,
     Platform,
@@ -730,7 +731,7 @@ async def test_capture_json_reports_navigation_timeout_separately(
 ) -> None:
     transport = PlaywrightPlatformTransport(auth_root=tmp_path)
     page = _FakeCapturePage(navigation_timeout=True)
-    transport._open_context = lambda platform, context: _capture_browser_context(page)  # type: ignore[method-assign]
+    transport._open_context = lambda platform, context: _capture_browser_context(page)  # type: ignore[method-assign, misc, assignment]
 
     with pytest.raises(PlatformAdapterError) as captured:
         await transport.capture_json(
@@ -755,7 +756,7 @@ async def test_xiaohongshu_capture_warms_authenticated_page_before_search(
 ) -> None:
     transport = PlaywrightPlatformTransport(auth_root=tmp_path)
     page = _FakeCapturePage(payload={"success": True, "data": {"items": []}})
-    transport._open_context = lambda platform, context: _capture_browser_context(page)  # type: ignore[method-assign]
+    transport._open_context = lambda platform, context: _capture_browser_context(page)  # type: ignore[method-assign, misc, assignment]
     search_url = "https://www.xiaohongshu.com/search_result?keyword=city"
 
     payload = await transport.capture_json(
@@ -777,7 +778,7 @@ async def test_xiaohongshu_capture_warms_authenticated_page_before_search(
 async def test_xiaohongshu_capture_identifies_warmup_timeout(tmp_path: Path) -> None:
     transport = PlaywrightPlatformTransport(auth_root=tmp_path)
     page = _FakeCapturePage(navigation_timeout=True)
-    transport._open_context = lambda platform, context: _capture_browser_context(page)  # type: ignore[method-assign]
+    transport._open_context = lambda platform, context: _capture_browser_context(page)  # type: ignore[method-assign, misc, assignment]
 
     with pytest.raises(PlatformAdapterError) as captured:
         await transport.capture_json(
@@ -798,7 +799,7 @@ async def test_capture_json_reports_response_timeout_separately(
 ) -> None:
     transport = PlaywrightPlatformTransport(auth_root=tmp_path)
     page = _FakeCapturePage(response_timeout=True)
-    transport._open_context = lambda platform, context: _capture_browser_context(page)  # type: ignore[method-assign]
+    transport._open_context = lambda platform, context: _capture_browser_context(page)  # type: ignore[method-assign, misc, assignment]
 
     with pytest.raises(PlatformAdapterError) as captured:
         await transport.capture_json(
@@ -830,7 +831,7 @@ async def test_xiaohongshu_response_timeout_reports_rendered_challenge(
             "login_container_visible": False,
         },
     )
-    transport._open_context = lambda platform, context: _capture_browser_context(page)  # type: ignore[method-assign]
+    transport._open_context = lambda platform, context: _capture_browser_context(page)  # type: ignore[method-assign, misc, assignment]
 
     with pytest.raises(PlatformAdapterError) as captured:
         await transport.capture_json(
@@ -863,7 +864,7 @@ async def test_xiaohongshu_response_timeout_reports_rendered_logout(
             "login_container_visible": True,
         },
     )
-    transport._open_context = lambda platform, context: _capture_browser_context(page)  # type: ignore[method-assign]
+    transport._open_context = lambda platform, context: _capture_browser_context(page)  # type: ignore[method-assign, misc, assignment]
 
     with pytest.raises(PlatformAdapterError) as captured:
         await transport.capture_json(
@@ -945,13 +946,199 @@ class _RecordingNetworkBackend(httpcore.AsyncNetworkBackend):
 
 
 @pytest.mark.asyncio
-async def test_platform_browser_explicitly_bypasses_system_proxy(
+@pytest.mark.parametrize(
+    ("visible", "expected_headless"),
+    [(False, True), (True, False)],
+)
+async def test_platform_browser_visibility_is_execution_scoped(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    visible: bool,
+    expected_headless: bool,
+) -> None:
+    launches: list[tuple[Path, dict[str, object]]] = []
+
+    class FakeContext(_FakeBrowser):
+        async def close(self) -> None:
+            return None
+
+    class FakeChromium:
+        async def launch_persistent_context(
+            self,
+            user_data_dir: Path,
+            **kwargs: object,
+        ) -> FakeContext:
+            launches.append((user_data_dir, kwargs))
+            return FakeContext()
+
+    class FakePlaywrightManager:
+        async def __aenter__(self) -> Any:
+            return type("FakePlaywright", (), {"chromium": FakeChromium()})()
+
+        async def __aexit__(self, *args: object) -> None:
+            del args
+
+    monkeypatch.setattr(
+        "material_collector.infrastructure.platforms.transport.async_playwright",
+        FakePlaywrightManager,
+    )
+    transport = PlaywrightPlatformTransport(auth_root=tmp_path)
+
+    context = PlatformContext(
+        auth_profile="editing",
+        browser_channel=BrowserChannel.EDGE,
+        show_search_browser=visible,
+    )
+    async with transport._open_context(Platform.BILIBILI, context, visible=visible):
+        pass
+
+    profile_path, launch = launches[0]
+    assert profile_path == tmp_path / "editing" / "edge" / "bilibili"
+    assert launch["channel"] == "msedge"
+    assert launch["args"] == ["--no-proxy-server"]
+    assert launch["headless"] is expected_headless
+    assert launch["chromium_sandbox"] is True
+
+
+@pytest.mark.asyncio
+async def test_visible_search_queries_share_one_platform_browser_context(
+    tmp_path: Path,
+) -> None:
+    opened = 0
+    closed = 0
+
+    class SharedPage(_FakeCapturePage):
+        def __init__(self) -> None:
+            super().__init__(payload={"code": 0, "data": {"result": []}})
+            self._closed = False
+            self._close_callbacks: list[Any] = []
+
+        async def add_init_script(self, script: str) -> None:
+            del script
+
+        def on(self, event: str, callback: Any) -> None:
+            assert event == "close"
+            self._close_callbacks.append(callback)
+
+        def is_closed(self) -> bool:
+            return self._closed
+
+        def close_by_user(self) -> None:
+            self._closed = True
+            for callback in self._close_callbacks:
+                callback(self)
+
+    class SharedBrowser:
+        def __init__(self) -> None:
+            self.pages: list[SharedPage] = []
+
+        async def new_page(self) -> SharedPage:
+            page = SharedPage()
+            self.pages.append(page)
+            return page
+
+    browser = SharedBrowser()
+
+    @asynccontextmanager
+    async def shared_context() -> Any:
+        nonlocal opened, closed
+        opened += 1
+        try:
+            yield browser
+        finally:
+            closed += 1
+
+    transport = PlaywrightPlatformTransport(auth_root=tmp_path)
+    transport._open_context = lambda platform, context, visible=False: shared_context()  # type: ignore[method-assign, misc]
+    context = PlatformContext(
+        auth_profile="editing",
+        browser_channel=BrowserChannel.EDGE,
+        show_search_browser=True,
+    )
+
+    async with transport.search_execution((Platform.BILIBILI,), context):
+        await transport.capture_json(
+            "https://search.bilibili.com/all?keyword=city",
+            "/x/web-interface/wbi/search/type",
+            platform=Platform.BILIBILI,
+            operation="search",
+            context=context,
+        )
+        await transport.capture_json(
+            "https://search.bilibili.com/all?keyword=space",
+            "/x/web-interface/wbi/search/type",
+            platform=Platform.BILIBILI,
+            operation="search",
+            context=context,
+        )
+
+        assert opened == 1
+        assert closed == 0
+
+        browser.pages[-1].close_by_user()
+        with pytest.raises(PlatformAdapterError) as captured:
+            await transport.capture_json(
+                "https://search.bilibili.com/all?keyword=closed",
+                "/x/web-interface/wbi/search/type",
+                platform=Platform.BILIBILI,
+                operation="search",
+                context=context,
+            )
+        assert captured.value.code == "search_browser_closed"
+
+    assert opened == 1
+    assert closed == 1
+
+
+@pytest.mark.asyncio
+async def test_visible_search_window_close_is_structured_and_never_reopens_headless(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     launches: list[dict[str, object]] = []
+    scripts: list[str] = []
 
-    class FakeContext(_FakeBrowser):
+    class FakePending:
+        async def __aenter__(self) -> Self:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            del args
+
+        @property
+        async def value(self) -> object:
+            raise AssertionError("a closed page cannot produce a response")
+
+    class ClosedPage:
+        def __init__(self) -> None:
+            self._closed = False
+            self._close_callbacks: list[Any] = []
+
+        async def add_init_script(self, script: str) -> None:
+            scripts.append(script)
+
+        def on(self, event: str, callback: Any) -> None:
+            assert event == "close"
+            self._close_callbacks.append(callback)
+
+        def expect_response(self, *args: object, **kwargs: object) -> FakePending:
+            del args, kwargs
+            return FakePending()
+
+        async def goto(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+            self._closed = True
+            for callback in self._close_callbacks:
+                callback(self)
+            raise RuntimeError("private browser path must not escape")
+
+        def is_closed(self) -> bool:
+            return self._closed
+
+    class FakeContext:
+        async def new_page(self) -> ClosedPage:
+            return ClosedPage()
+
         async def close(self) -> None:
             return None
 
@@ -976,14 +1163,39 @@ async def test_platform_browser_explicitly_bypasses_system_proxy(
         "material_collector.infrastructure.platforms.transport.async_playwright",
         FakePlaywrightManager,
     )
-    transport = PlaywrightPlatformTransport(auth_root=tmp_path)
+    context = PlatformContext(
+        auth_profile="editing",
+        browser_channel=BrowserChannel.EDGE,
+        show_search_browser=True,
+    )
 
-    async with transport._open_context(Platform.BILIBILI, CONTEXT):
-        pass
+    with pytest.raises(PlatformAdapterError) as captured:
+        await PlaywrightPlatformTransport(auth_root=tmp_path).capture_json(
+            "https://www.bilibili.com/search",
+            "/api/search",
+            platform=Platform.BILIBILI,
+            operation="search",
+            context=context,
+        )
 
-    assert launches[0]["args"] == ["--no-proxy-server"]
-    assert launches[0]["headless"] is True
-    assert launches[0]["chromium_sandbox"] is True
+    assert captured.value.code == "search_browser_closed"
+    assert captured.value.details == {
+        "platform": "bilibili",
+        "operation": "search",
+        "retryable": True,
+    }
+    assert launches == [
+        {
+            "channel": "msedge",
+            "headless": False,
+            "chromium_sandbox": True,
+            "args": ["--no-proxy-server"],
+        }
+    ]
+    assert len(scripts) == 1
+    assert "Material Collector" in scripts[0]
+    assert "bilibili" in scripts[0]
+    assert "private browser path" not in str(captured.value.details)
 
 
 @pytest.mark.asyncio
@@ -1007,7 +1219,7 @@ async def test_download_connects_to_validated_ip_without_second_dns_lookup(
         resolver=rebinding_resolver,
         network_backend=backend,
     )
-    transport._open_context = lambda platform, context: _browser_context()  # type: ignore[method-assign]
+    transport._open_context = lambda platform, context: _browser_context()  # type: ignore[method-assign, misc, assignment]
 
     destination = (tmp_path / "pinned.mp4").resolve()
     await transport.download(
@@ -1039,7 +1251,7 @@ async def test_download_rejects_allowed_cdn_name_resolving_to_private_address(
         auth_root=tmp_path,
         resolver=private_resolver,
     )
-    transport._open_context = lambda platform, context: _browser_context()  # type: ignore[method-assign]
+    transport._open_context = lambda platform, context: _browser_context()  # type: ignore[method-assign, misc, assignment]
 
     with pytest.raises(PlatformAdapterError) as captured:
         await transport.download(
@@ -1098,7 +1310,7 @@ async def test_download_revalidates_each_redirect_and_rejects_private_target(
         resolver=public_resolver,
         http_transport=httpx.MockTransport(handler),
     )
-    transport._open_context = lambda platform, context: _browser_context()  # type: ignore[method-assign]
+    transport._open_context = lambda platform, context: _browser_context()  # type: ignore[method-assign, misc, assignment]
 
     with pytest.raises(PlatformAdapterError) as captured:
         await transport.download(
@@ -1143,7 +1355,7 @@ async def test_download_does_not_use_environment_proxy(
         resolver=public_resolver,
         http_transport=httpx.MockTransport(handler),
     )
-    transport._open_context = lambda platform, context: _browser_context()  # type: ignore[method-assign]
+    transport._open_context = lambda platform, context: _browser_context()  # type: ignore[method-assign, misc, assignment]
 
     destination = (tmp_path / "direct.mp4").resolve()
     await transport.download(
@@ -1229,7 +1441,7 @@ async def test_short_link_rejects_private_dns_before_request(tmp_path: Path) -> 
         auth_root=tmp_path,
         resolver=private_resolver,
     )
-    transport._open_context = lambda platform, context: _resolve_browser_context(url)  # type: ignore[method-assign]
+    transport._open_context = lambda platform, context: _resolve_browser_context(url)  # type: ignore[method-assign, misc, assignment]
 
     with pytest.raises(PlatformAdapterError) as captured:
         await transport.resolve_url(url, platform=Platform.DOUYIN, context=CONTEXT)
@@ -1260,7 +1472,7 @@ async def test_short_link_rejects_cross_platform_redirect(tmp_path: Path) -> Non
         resolver=public_resolver,
         http_transport=httpx.MockTransport(handler),
     )
-    transport._open_context = lambda platform, context: _resolve_browser_context(target)  # type: ignore[method-assign]
+    transport._open_context = lambda platform, context: _resolve_browser_context(target)  # type: ignore[method-assign, misc, assignment]
 
     with pytest.raises(PlatformAdapterError) as captured:
         await transport.resolve_url(

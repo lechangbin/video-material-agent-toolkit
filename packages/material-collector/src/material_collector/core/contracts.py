@@ -9,10 +9,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from material_collector.core.errors import ContractError
+from material_collector.core.errors import ContractError, ContractVersionError
 from material_collector.core.media import PLATFORM_ORDER, Platform
 
-SchemaVersion = Literal["1.0"]
+CollectionSchemaVersion = Literal["1.0"]
+QueryPlansSchemaVersion = Literal["2.0"]
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 
@@ -73,7 +74,7 @@ class CollectionSegmentDraft(_ContractModel):
 
 
 class CollectionInputDraft(_ContractModel):
-    schema_version: SchemaVersion
+    schema_version: CollectionSchemaVersion
     full_script: str
     theme: str | None = None
     segments: tuple[CollectionSegmentDraft, ...] = Field(min_length=1)
@@ -103,7 +104,7 @@ class CollectionSegment(_ContractModel):
 
 
 class CollectionInput(_ContractModel):
-    schema_version: SchemaVersion = "1.0"
+    schema_version: CollectionSchemaVersion = "1.0"
     full_script: str
     theme: str | None = None
     segments: tuple[CollectionSegment, ...]
@@ -179,8 +180,18 @@ class QueryPlanDraft(_ContractModel):
 
 
 class QueryPlansDraft(_ContractModel):
-    schema_version: SchemaVersion
+    schema_version: QueryPlansSchemaVersion
+    platform_scope: tuple[Platform, ...] = Field(min_length=1)
     plans: tuple[QueryPlanDraft, ...] = Field(min_length=1)
+
+
+def contract_schema_bundle() -> dict[str, dict[str, Any]]:
+    """Return authoring schemas generated from the authoritative draft models."""
+
+    return {
+        "collection_input": CollectionInputDraft.model_json_schema(mode="validation"),
+        "query_plans": QueryPlansDraft.model_json_schema(mode="validation"),
+    }
 
 
 class VisualFacet(_ContractModel):
@@ -204,7 +215,8 @@ class QueryPlan(_ContractModel):
 
 
 class QueryPlans(_ContractModel):
-    schema_version: SchemaVersion = "1.0"
+    schema_version: QueryPlansSchemaVersion = "2.0"
+    platform_scope: tuple[Platform, ...]
     plans: tuple[QueryPlan, ...]
 
 
@@ -222,9 +234,13 @@ class NormalizedContracts:
     warnings: tuple[ContractWarning, ...]
 
 
-def _pydantic_error(name: str, error: ValidationError) -> ContractError:
+def _pydantic_error(
+    name: str,
+    schema_version: str,
+    error: ValidationError,
+) -> ContractError:
     return ContractError(
-        f"{name} does not satisfy schema version 1.0.",
+        f"{name} does not satisfy schema version {schema_version}.",
         details={"document": name, "issues": error.errors(include_url=False, include_input=False)},
     )
 
@@ -235,7 +251,7 @@ def normalize_collection_input(data: Any) -> tuple[CollectionInput, tuple[Contra
     try:
         draft = CollectionInputDraft.model_validate(data)
     except ValidationError as error:
-        raise _pydantic_error("collection_input", error) from error
+        raise _pydantic_error("collection_input", "1.0", error) from error
 
     normalized_segments: list[tuple[int, int, CollectionSegment]] = []
     seen_ids: set[str] = set()
@@ -299,10 +315,26 @@ def normalize_collection_input(data: Any) -> tuple[CollectionInput, tuple[Contra
 def normalize_query_plans(data: Any, collection_input: CollectionInput) -> QueryPlans:
     """Validate QueryPlans and their relationship to the frozen input."""
 
+    if (
+        isinstance(data, dict)
+        and "schema_version" in data
+        and data["schema_version"] != "2.0"
+    ):
+        raise ContractVersionError("query_plans", data["schema_version"], "2.0")
+
     try:
         draft = QueryPlansDraft.model_validate(data)
     except ValidationError as error:
-        raise _pydantic_error("query_plans", error) from error
+        raise _pydantic_error("query_plans", "2.0", error) from error
+
+    if len(set(draft.platform_scope)) != len(draft.platform_scope):
+        raise ContractError(
+            "The collection platform scope must not contain duplicates.",
+            details={"document": "query_plans"},
+        )
+    platform_scope = tuple(
+        platform for platform in PLATFORM_ORDER if platform in draft.platform_scope
+    )
 
     input_segment_ids = tuple(segment.segment_id for segment in collection_input.segments)
     input_segment_set = set(input_segment_ids)
@@ -359,7 +391,6 @@ def normalize_query_plans(data: Any, collection_input: CollectionInput) -> Query
         queries: list[InitialQuery] = []
         query_ids: set[str] = set()
         query_texts: set[str] = set()
-        covered_platforms: set[Platform] = set()
         for query in plan.initial_queries:
             if query.query_id in query_ids:
                 raise ContractError(
@@ -405,9 +436,20 @@ def normalize_query_plans(data: Any, collection_input: CollectionInput) -> Query
             target_platforms = tuple(
                 platform for platform in PLATFORM_ORDER if platform in query.target_platforms
             )
+            if target_platforms != platform_scope or len(query.target_platforms) != len(
+                platform_scope
+            ):
+                raise ContractError(
+                    "Every query expression must target the complete collection platform scope.",
+                    details={
+                        "query_plan_id": query_plan_id,
+                        "query_id": query.query_id,
+                        "platform_scope": platform_scope,
+                        "target_platforms": target_platforms,
+                    },
+                )
             query_ids.add(query.query_id)
             query_texts.add(query_text_key)
-            covered_platforms.update(target_platforms)
             queries.append(
                 InitialQuery(
                     query_id=query.query_id,
@@ -415,18 +457,6 @@ def normalize_query_plans(data: Any, collection_input: CollectionInput) -> Query
                     target_platforms=target_platforms,
                     facet_ids=query.facet_ids,
                 )
-            )
-
-        missing_platforms = [
-            platform for platform in PLATFORM_ORDER if platform not in covered_platforms
-        ]
-        if missing_platforms:
-            raise ContractError(
-                "Each QueryPlan must cover all phase-one platforms across its initial queries.",
-                details={
-                    "query_plan_id": query_plan_id,
-                    "missing_platforms": missing_platforms,
-                },
             )
 
         plans_by_segment[plan.segment_id] = QueryPlan(
@@ -446,7 +476,10 @@ def normalize_query_plans(data: Any, collection_input: CollectionInput) -> Query
             details={"missing_segment_ids": missing_segments},
         )
 
-    return QueryPlans(plans=tuple(plans_by_segment[item] for item in input_segment_ids))
+    return QueryPlans(
+        platform_scope=platform_scope,
+        plans=tuple(plans_by_segment[item] for item in input_segment_ids),
+    )
 
 
 def normalize_contracts(collection_data: Any, query_plan_data: Any) -> NormalizedContracts:

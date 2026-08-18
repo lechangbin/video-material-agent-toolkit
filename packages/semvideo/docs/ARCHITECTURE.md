@@ -237,7 +237,7 @@ propose(evidence_window, analysis_policy) -> SemanticSegmentationProposal
 
 该模块构造版本化模型输入，要求模型识别跨镜头的连续叙事事件，验证结构化输出，并保存模型运行与原始响应。它不生成 FFmpeg 命令，也不把证据帧位置直接当作语义切点。
 
-默认模型通过可版本化 Adapter Profile 选择；当前基线为 `Qwen/Qwen3.6-35B-A3B` 非思考模式，但领域接口不依赖具体型号。
+默认模型通过可版本化 Adapter Profile 选择；当前基线为 `Qwen/Qwen3.6-35B-A3B` 非思考模式，但领域接口不依赖具体型号。显式 Agnes 配置档使用 `agnes-2.5-flash`，把 512K 作为输入与输出共享的单请求总预算，并把跨 Worker 同时在途请求限制为最多 2 个。
 
 云端模型调用是 Semvideo Worker 发起的独立请求，不占用或继承调用它的主 Agent 上下文预算。证据窗口数量与请求输入规模根据视频时长、证据密度、图片数量和模型上下文上限动态计算；V1 不设置单任务 token 硬预算。每次请求仍设置满足 Schema 输出所需的技术性输出上限，并记录实际 token 和费用。
 

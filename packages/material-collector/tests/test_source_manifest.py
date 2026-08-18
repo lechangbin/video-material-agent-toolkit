@@ -15,10 +15,11 @@ from material_collector.application.sessions import (
     SessionApplication,
 )
 from material_collector.application.source_manifest import SourceManifestApplication
-from material_collector.core.errors import ContractError
+from material_collector.core.errors import ContractError, SessionStateError
 from material_collector.core.manifest import WorkGroupMember, WorkGroupRecord
 from material_collector.core.media import (
     AssetRecord,
+    BrowserChannel,
     CandidateSource,
     FetchRequest,
     FetchResult,
@@ -29,6 +30,7 @@ from material_collector.core.media import (
     ResolvedSource,
     SearchBatch,
     SearchRequest,
+    TitleViewPublication,
 )
 from material_collector.infrastructure.assets import WorkspaceAssetStoreFactory
 from material_collector.infrastructure.session_store import SqliteSessionStore
@@ -43,7 +45,11 @@ def write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
 
 
-def create_session(tmp_path: Path) -> tuple[Path, str]:
+def create_session(
+    tmp_path: Path,
+    *,
+    platform_scope: tuple[str, ...] = ("bilibili", "douyin", "xiaohongshu"),
+) -> tuple[Path, str]:
     input_path = tmp_path / "input.json"
     plans_path = tmp_path / "plans.json"
     write_json(
@@ -57,7 +63,8 @@ def create_session(tmp_path: Path) -> tuple[Path, str]:
     write_json(
         plans_path,
         {
-            "schema_version": "1.0",
+            "schema_version": "2.0",
+            "platform_scope": list(platform_scope),
             "plans": [
                 {
                     "segment_id": "seg_001",
@@ -67,11 +74,7 @@ def create_session(tmp_path: Path) -> tuple[Path, str]:
                         {
                             "query_id": "query_001",
                             "text": "查询",
-                            "target_platforms": [
-                                "bilibili",
-                                "douyin",
-                                "xiaohongshu",
-                            ],
+                            "target_platforms": list(platform_scope),
                             "facet_ids": ["facet_001"],
                         }
                     ],
@@ -128,6 +131,64 @@ def bilibili_batch() -> SearchBatch:
     )
 
 
+def test_manifest_rejects_a_search_batch_outside_the_frozen_scope(
+    tmp_path: Path,
+) -> None:
+    workspace, session_id = create_session(tmp_path, platform_scope=("bilibili",))
+    application = manifest_application()
+    source = bilibili_batch()
+    douyin_candidate = source.candidates[0].model_copy(
+        update={
+            "platform": Platform.DOUYIN,
+            "source_id": "7123456789",
+            "canonical_url": "https://www.douyin.com/video/7123456789",
+        }
+    )
+    douyin_batch = source.model_copy(
+        update={"platform": Platform.DOUYIN, "candidates": (douyin_candidate,)}
+    )
+
+    with pytest.raises(ContractError, match="frozen platform scope"):
+        application.record_search_batch(workspace, session_id, douyin_batch)
+
+    result = application.export(workspace, session_id)
+    assert result.platform_scope == (Platform.BILIBILI,)
+    assert result.candidates == ()
+
+
+def test_manifest_refuses_to_publish_stored_candidates_outside_frozen_scope(
+    tmp_path: Path,
+) -> None:
+    workspace, session_id = create_session(tmp_path, platform_scope=("bilibili",))
+    application = manifest_application()
+    application.record_search_batch(workspace, session_id, bilibili_batch())
+    database_path = (
+        workspace
+        / ".material-collector"
+        / "sessions"
+        / session_id
+        / "session.sqlite3"
+    )
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO candidate_source (
+                candidate_id, platform, source_id, canonical_url, title
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                "douyin:7123456789",
+                "douyin",
+                "7123456789",
+                "https://www.douyin.com/video/7123456789",
+                "越界候选",
+            ),
+        )
+
+    with pytest.raises(SessionStateError, match="frozen platform scope"):
+        application.export(workspace, session_id)
+
+
 def test_manifest_merges_discoveries_and_strips_temporary_query(
     tmp_path: Path,
 ) -> None:
@@ -143,7 +204,7 @@ def test_manifest_merges_discoveries_and_strips_temporary_query(
     result_path = (
         workspace / ".material-collector" / "sessions" / session_id / "collection-result.json"
     )
-    assert json.loads(result_path.read_text(encoding="utf-8"))["schema_version"] == "1.0"
+    assert json.loads(result_path.read_text(encoding="utf-8"))["schema_version"] == "2.0"
 
 
 def test_resolved_units_apply_duration_review_boundary(tmp_path: Path) -> None:
@@ -282,6 +343,53 @@ async def test_fetch_hq_receives_persisted_media_identity_metadata(
             ),
         ),
     )
+    asset_store_factory = WorkspaceAssetStoreFactory()
+    asset_store = asset_store_factory.for_workspace(workspace)
+    proxy_payload = b"low-proxy"
+    proxy_source = tmp_path / "proxy.mp4"
+    proxy_source.write_bytes(proxy_payload)
+    proxy = asset_store.import_fetch(
+        FetchResult(
+            media_unit_id="bilibili:BV1TEST:cid1",
+            quality=MediaQuality.LOW_PROXY,
+            path=proxy_source,
+            size_bytes=len(proxy_payload),
+            sha256=hashlib.sha256(proxy_payload).hexdigest(),
+            container="mp4",
+        )
+    )
+    proxy = asset_store.publish_title_view(
+        proxy,
+        TitleViewPublication(
+            session_id=session_id,
+            platform=Platform.BILIBILI,
+            source_id="BV1TEST",
+            source_title="测试视频",
+            media_unit_title="分P",
+        ),
+    )
+    manifest.record_asset(workspace, session_id, proxy)
+    manifest.replace_work_groups(
+        workspace,
+        session_id,
+        (
+            WorkGroupRecord(
+                work_group_id="wg_hq_primary",
+                status="independent",
+                primary_media_unit_id="bilibili:BV1TEST:cid1",
+                members=(
+                    WorkGroupMember(
+                        media_unit_id="bilibili:BV1TEST:cid1",
+                        platform=Platform.BILIBILI,
+                        role="primary",
+                        fallback_order=1,
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    fetch_count = 0
 
     class MetadataRequiringFetcher:
         platform = Platform.BILIBILI
@@ -291,7 +399,10 @@ async def test_fetch_hq_receives_persisted_media_identity_metadata(
             request: FetchRequest,
             context: PlatformContext,
         ) -> FetchResult:
+            nonlocal fetch_count
+            fetch_count += 1
             assert context.request_timeout_seconds == 77
+            assert context.browser_channel is BrowserChannel.EDGE
             assert request.media_unit.metadata == {
                 "bvid": "BV1TEST",
                 "cid": "cid1",
@@ -308,19 +419,49 @@ async def test_fetch_hq_receives_persisted_media_identity_metadata(
                 container="mp4",
             )
 
-    result = await MediaApplication(
+    media = MediaApplication(
         media_fetchers={Platform.BILIBILI: MetadataRequiringFetcher()},
         manifest=manifest,
-        asset_stores=WorkspaceAssetStoreFactory(),
-    ).fetch_high_quality(
+        asset_stores=asset_store_factory,
+    )
+    result = await media.fetch_high_quality(
         workspace,
         session_id,
         "bilibili:BV1TEST:cid1",
         auth_profile="default",
+        browser_channel=BrowserChannel.EDGE,
         request_timeout_seconds=77,
     )
 
     assert result.status == "high_quality_ready"
+    exported = manifest.export(workspace, session_id)
+    asset = exported.candidates[0].media_units[0].high_quality_asset
+    persisted_proxy = exported.candidates[0].media_units[0].proxy_asset
+    assert asset is not None
+    assert persisted_proxy is not None
+    assert persisted_proxy.relative_path == proxy.relative_path
+    assert persisted_proxy.display_relative_path == proxy.display_relative_path
+    assert asset.display_relative_path is not None
+    display = workspace / asset.display_relative_path
+    assert display.parent.name == "high-quality"
+    assert display.read_bytes() == b"high-quality"
+
+    replay = await media.fetch_high_quality(
+        workspace,
+        session_id,
+        "bilibili:BV1TEST:cid1",
+        auth_profile="default",
+        browser_channel=BrowserChannel.EDGE,
+        request_timeout_seconds=77,
+    )
+
+    assert fetch_count == 1
+    assert replay.asset_path == result.asset_path
+    replayed_asset = manifest.export(workspace, session_id).candidates[0].media_units[
+        0
+    ].high_quality_asset
+    assert replayed_asset is not None
+    assert replayed_asset.display_relative_path == asset.display_relative_path
 
 
 def test_assets_and_review_decisions_are_projected(tmp_path: Path) -> None:

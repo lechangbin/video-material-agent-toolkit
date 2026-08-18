@@ -19,8 +19,10 @@ from material_collector.core.errors import CollectorError
 from material_collector.core.fingerprints import FingerprintMatch
 from material_collector.core.media import (
     PLATFORM_ORDER,
+    AuthenticationSelection,
     AuthProbe,
     AuthStatus,
+    BrowserChannel,
     CandidateSource,
     FetchRequest,
     FetchResult,
@@ -31,7 +33,11 @@ from material_collector.core.media import (
     SearchBatch,
     SearchRequest,
 )
-from material_collector.infrastructure.assets import WorkspaceAssetStoreFactory
+from material_collector.infrastructure.assets import (
+    WorkspaceAssetStore,
+    WorkspaceAssetStoreFactory,
+)
+from material_collector.infrastructure.platforms.errors import PlatformAdapterError
 from material_collector.infrastructure.session_runtime_store import (
     SqliteSessionRuntime as SessionRuntime,
 )
@@ -50,39 +56,28 @@ def _create_session(
     tmp_path: Path,
     *,
     max_videos: int = 6,
-    add_bilibili_query: bool = False,
-    add_xiaohongshu_query: bool = False,
+    platform_scope: tuple[Platform, ...] = PLATFORM_ORDER,
+    add_second_query: bool = False,
     request_timeout_seconds: int = 30,
+    browser_channel: BrowserChannel = BrowserChannel.AUTO,
 ) -> tuple[Path, str]:
     input_path = tmp_path / "input.json"
     plans_path = tmp_path / "plans.json"
+    target_platforms = [platform.value for platform in platform_scope]
     queries = [
         {
             "query_id": "query_city",
             "text": "城市更新 旧工业区",
-            "target_platforms": [
-                "bilibili",
-                "douyin",
-                "xiaohongshu",
-            ],
+            "target_platforms": target_platforms,
             "facet_ids": ["facet_change"],
         }
     ]
-    if add_bilibili_query:
+    if add_second_query:
         queries.append(
             {
                 "query_id": "query_city_second",
                 "text": "城市更新 公共空间",
-                "target_platforms": ["bilibili"],
-                "facet_ids": ["facet_change"],
-            }
-        )
-    if add_xiaohongshu_query:
-        queries.append(
-            {
-                "query_id": "query_city_xiaohongshu_second",
-                "text": "城市更新 公共空间",
-                "target_platforms": ["xiaohongshu"],
+                "target_platforms": target_platforms,
                 "facet_ids": ["facet_change"],
             }
         )
@@ -104,7 +99,8 @@ def _create_session(
     _write_json(
         plans_path,
         {
-            "schema_version": "1.0",
+            "schema_version": "2.0",
+            "platform_scope": target_platforms,
             "plans": [
                 {
                     "segment_id": "seg_city",
@@ -131,6 +127,7 @@ def _create_session(
                 max_videos=max_videos,
                 auth_wait_seconds=30,
                 request_timeout_seconds=request_timeout_seconds,
+                browser_channel=browser_channel,
             ),
         )
     )
@@ -138,13 +135,24 @@ def _create_session(
 
 
 class _Authentication:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        selected_channel: BrowserChannel = BrowserChannel.EDGE,
+    ) -> None:
         self.ensure_calls: list[tuple[Platform, ...]] = []
+        self.requested_channels: list[BrowserChannel] = []
+        self.selected_channel = selected_channel
 
-    async def probe(self, platform: Platform, auth_profile: str) -> AuthProbe:
+    async def probe(
+        self,
+        platform: Platform,
+        auth_profile: str,
+        browser_channel: BrowserChannel = BrowserChannel.CHROME,
+    ) -> AuthProbe:
         return AuthProbe(
             platform=platform,
             auth_profile=auth_profile,
+            browser_channel=browser_channel,
             status=AuthStatus.VALID,
             checked_at="2026-07-29T00:00:00Z",
         )
@@ -155,30 +163,37 @@ class _Authentication:
         auth_profile: str,
         wait_seconds: int,
         *,
+        browser_channel: BrowserChannel = BrowserChannel.CHROME,
         progress: Any | None = None,
-    ) -> tuple[AuthProbe, ...]:
+    ) -> AuthenticationSelection:
         del wait_seconds
         self.ensure_calls.append(platforms)
+        self.requested_channels.append(browser_channel)
         if progress is not None:
             progress.report(
                 "authentication_probe_started",
                 {
                     "platform": platforms[0].value,
                     "auth_profile": auth_profile,
+                    "browser_channel": browser_channel.value,
                 },
             )
         probes: list[AuthProbe] = []
         for platform in platforms:
-            probes.append(await self.probe(platform, auth_profile))
-        return tuple(probes)
+            probes.append(await self.probe(platform, auth_profile, self.selected_channel))
+        return AuthenticationSelection(
+            browser_channel=self.selected_channel,
+            probes=tuple(probes),
+        )
 
     async def logout(
         self,
         platform: Platform,
         auth_profile: str,
         confirmation: str,
+        browser_channel: BrowserChannel = BrowserChannel.CHROME,
     ) -> None:
-        del platform, auth_profile, confirmation
+        del platform, auth_profile, confirmation, browser_channel
 
 
 class _Platform:
@@ -202,6 +217,8 @@ class _Platform:
         self.fetch_failures: list[CollectorError] = []
         self.seen_timeouts: list[int] = []
         self.seen_search_limits: list[int] = []
+        self.seen_channels: list[BrowserChannel] = []
+        self.seen_search_visibility: list[bool] = []
 
     async def search(
         self,
@@ -209,6 +226,8 @@ class _Platform:
         context: PlatformContext,
     ) -> SearchBatch:
         self.seen_timeouts.append(context.request_timeout_seconds)
+        self.seen_channels.append(context.browser_channel)
+        self.seen_search_visibility.append(context.show_search_browser)
         self.seen_search_limits.append(request.limit)
         self.search_count += 1
         if self.search_failures:
@@ -245,6 +264,7 @@ class _Platform:
         context: PlatformContext,
     ) -> ResolvedSource:
         self.seen_timeouts.append(context.request_timeout_seconds)
+        self.seen_channels.append(context.browser_channel)
         self.resolve_count += 1
         if self.resolve_failures:
             raise self.resolve_failures.pop(0)
@@ -268,6 +288,7 @@ class _Platform:
         context: PlatformContext,
     ) -> FetchResult:
         self.seen_timeouts.append(context.request_timeout_seconds)
+        self.seen_channels.append(context.browser_channel)
         self.fetch_count += 1
         if self.fetch_failures:
             raise self.fetch_failures.pop(0)
@@ -327,7 +348,7 @@ class _RecordingProgress:
 
 def _make_workflow(
     authentication: _Authentication,
-    adapters: dict[Platform, _Platform],
+    adapters: dict[Platform, Any],
     runtime: SessionRuntime,
     fingerprints: _FingerprintService | None = None,
     progress: _RecordingProgress | None = None,
@@ -383,9 +404,10 @@ async def test_cancel_during_authentication_stops_waiting_and_closes_gateway(
             auth_profile: str,
             wait_seconds: int,
             *,
+            browser_channel: BrowserChannel = BrowserChannel.CHROME,
             progress: Any | None = None,
-        ) -> tuple[AuthProbe, ...]:
-            del platforms, auth_profile, wait_seconds, progress
+        ) -> AuthenticationSelection:
+            del platforms, auth_profile, wait_seconds, browser_channel, progress
             started.set()
             try:
                 await asyncio.Event().wait()
@@ -552,8 +574,153 @@ async def test_workflow_forwards_authentication_progress_to_caller(
 
     assert (
         "authentication_probe_started",
-        {"platform": "bilibili", "auth_profile": "default"},
+        {
+            "platform": "bilibili",
+            "auth_profile": "default",
+            "browser_channel": "auto",
+        },
     ) in progress.events
+
+
+@pytest.mark.asyncio
+async def test_workflow_freezes_selected_channel_and_uses_it_for_platforms(
+    tmp_path: Path,
+) -> None:
+    workspace, session_id = _create_session(tmp_path)
+    authentication = _Authentication(selected_channel=BrowserChannel.EDGE)
+    adapters = {platform: _Platform(platform) for platform in PLATFORM_ORDER}
+    workflow = _make_workflow(
+        authentication,
+        adapters,
+        SessionRuntime(lease_ttl_seconds=900),
+    )
+
+    await workflow.run(workspace, session_id)
+
+    session = SessionApplication(store=SqliteSessionStore()).get_session(
+        workspace,
+        session_id,
+    )
+    assert authentication.requested_channels == [BrowserChannel.AUTO]
+    assert session.selected_browser_channel is BrowserChannel.EDGE
+    assert all(
+        adapter.seen_channels
+        and set(adapter.seen_channels) == {BrowserChannel.EDGE}
+        for adapter in adapters.values()
+    )
+
+
+@pytest.mark.asyncio
+async def test_workflow_resume_reuses_frozen_channel_instead_of_auto(
+    tmp_path: Path,
+) -> None:
+    workspace, session_id = _create_session(tmp_path)
+    sessions = SessionApplication(store=SqliteSessionStore())
+    sessions.freeze_browser_channel(workspace, session_id, BrowserChannel.EDGE)
+    authentication = _Authentication(selected_channel=BrowserChannel.EDGE)
+    adapters = {platform: _Platform(platform) for platform in PLATFORM_ORDER}
+    workflow = _make_workflow(
+        authentication,
+        adapters,
+        SessionRuntime(lease_ttl_seconds=900),
+    )
+
+    await workflow.run(workspace, session_id)
+
+    assert authentication.requested_channels == [BrowserChannel.EDGE]
+
+
+@pytest.mark.asyncio
+async def test_visible_search_close_retains_commits_and_resume_replays_only_unfinished(
+    tmp_path: Path,
+) -> None:
+    workspace, session_id = _create_session(tmp_path, add_second_query=True)
+
+    class ClosingSearch(_Platform):
+        def __init__(self) -> None:
+            super().__init__(Platform.BILIBILI)
+            self.attempts = 0
+
+        async def search(
+            self,
+            request: SearchRequest,
+            context: PlatformContext,
+        ) -> SearchBatch:
+            self.attempts += 1
+            if self.attempts == 2:
+                self.seen_search_visibility.append(context.show_search_browser)
+                raise PlatformAdapterError(
+                    "search_browser_closed",
+                    "The visible search browser was closed.",
+                    platform=Platform.BILIBILI,
+                    operation="search",
+                    retryable=True,
+                )
+            return await super().search(request, context)
+
+    closing = ClosingSearch()
+    adapters = {platform: _Platform(platform) for platform in PLATFORM_ORDER}
+    adapters[Platform.BILIBILI] = closing
+    workflow = _make_workflow(
+        _Authentication(),
+        adapters,
+        SessionRuntime(lease_ttl_seconds=900),
+    )
+
+    with pytest.raises(CollectorError) as captured:
+        await workflow.run(workspace, session_id, show_search_browsers=True)
+
+    assert captured.value.code == "search_browser_closed"
+    committed = SourceManifestApplication(store=SqliteSourceManifestStore()).export(
+        workspace,
+        session_id,
+    )
+    assert {candidate.platform for candidate in committed.candidates} == set(PLATFORM_ORDER)
+    session = SessionApplication(store=SqliteSessionStore()).get_session(
+        workspace,
+        session_id,
+    )
+    assert "show_search" not in str(session.model_dump()).lower()
+
+    result = await workflow.run(workspace, session_id, show_search_browsers=True)
+
+    assert result.status == "integration_required"
+    assert closing.attempts == 3
+    assert closing.seen_search_visibility == [True, True, True]
+
+
+@pytest.mark.asyncio
+async def test_visible_multi_platform_search_still_starts_concurrently(
+    tmp_path: Path,
+) -> None:
+    workspace, session_id = _create_session(tmp_path)
+    started: set[Platform] = set()
+    all_started = asyncio.Event()
+
+    class ConcurrentSearch(_Platform):
+        async def search(
+            self,
+            request: SearchRequest,
+            context: PlatformContext,
+        ) -> SearchBatch:
+            assert context.show_search_browser is True
+            started.add(self.platform)
+            if started == set(PLATFORM_ORDER):
+                all_started.set()
+            await asyncio.wait_for(all_started.wait(), timeout=1)
+            return await super().search(request, context)
+
+    adapters = {platform: ConcurrentSearch(platform) for platform in PLATFORM_ORDER}
+    workflow = _make_workflow(
+        _Authentication(),
+        adapters,
+        SessionRuntime(lease_ttl_seconds=900),
+    )
+
+    result = await workflow.run(workspace, session_id, show_search_browsers=True)
+
+    assert result.status == "integration_required"
+    assert started == set(PLATFORM_ORDER)
 
 
 @pytest.mark.asyncio
@@ -596,6 +763,202 @@ async def test_workflow_collects_sources_and_pauses_for_integration(
 
 
 @pytest.mark.asyncio
+async def test_bilibili_only_scope_never_contacts_other_platforms(
+    tmp_path: Path,
+) -> None:
+    workspace, session_id = _create_session(
+        tmp_path,
+        platform_scope=(Platform.BILIBILI,),
+    )
+    authentication = _Authentication()
+    adapters = {platform: _Platform(platform) for platform in PLATFORM_ORDER}
+    workflow = _make_workflow(
+        authentication,
+        adapters,
+        SessionRuntime(lease_ttl_seconds=900),
+    )
+
+    result = await workflow.run(workspace, session_id)
+
+    assert result.platform_scope == (Platform.BILIBILI,)
+    assert json.loads(Path(result.result_path).read_text(encoding="utf-8"))[
+        "platform_scope"
+    ] == ["bilibili"]
+    assert authentication.ensure_calls == [(Platform.BILIBILI,)]
+    assert adapters[Platform.BILIBILI].search_count == 1
+    assert adapters[Platform.BILIBILI].resolve_count == 1
+    assert adapters[Platform.BILIBILI].fetch_count == 1
+    for platform in (Platform.DOUYIN, Platform.XIAOHONGSHU):
+        assert adapters[platform].search_count == 0
+        assert adapters[platform].resolve_count == 0
+        assert adapters[platform].fetch_count == 0
+
+
+@pytest.mark.asyncio
+async def test_primary_proxy_is_published_through_title_material_view(
+    tmp_path: Path,
+) -> None:
+    workspace, session_id = _create_session(
+        tmp_path,
+        platform_scope=(Platform.BILIBILI,),
+    )
+    adapter = _Platform(
+        Platform.BILIBILI,
+        title='城市：更新/完整? "秋季"',
+    )
+    adapters = {
+        platform: adapter if platform is Platform.BILIBILI else _Platform(platform)
+        for platform in PLATFORM_ORDER
+    }
+    workflow = _make_workflow(
+        _Authentication(),
+        adapters,
+        SessionRuntime(lease_ttl_seconds=900),
+    )
+
+    await workflow.run(workspace, session_id)
+
+    manifest = workflow._manifest.export(workspace, session_id)
+    asset = manifest.candidates[0].media_units[0].proxy_asset
+    assert asset is not None
+    assert asset.display_relative_path is not None
+    display = workspace / asset.display_relative_path
+    assert display.is_file()
+    assert display.read_bytes() == (workspace / asset.relative_path).read_bytes()
+    assert display.parts[-3].startswith("城市_更新")
+    assert "--" in display.parts[-3]
+    assert "__bilibili__" in display.parts[-3]
+    assert display.parts[-3].endswith("31c56064")
+    assert display.parts[-2] == "low-proxy"
+    assert display.name.startswith("城市_更新")
+    assert "--" in display.name
+    assert display.name.endswith("00e934af.mp4")
+    result_path = (
+        workspace
+        / ".material-collector"
+        / "sessions"
+        / session_id
+        / "collection-result.json"
+    )
+    payload = json.loads(result_path.read_text(encoding="utf-8"))
+    exported_asset = payload["candidates"][0]["media_units"][0]["proxy_asset"]
+    assert exported_asset["relative_path"] == asset.relative_path
+    assert exported_asset["display_relative_path"] == asset.display_relative_path
+
+
+@pytest.mark.asyncio
+async def test_multi_part_source_uses_one_source_folder_and_unit_titles(
+    tmp_path: Path,
+) -> None:
+    workspace, session_id = _create_session(
+        tmp_path,
+        platform_scope=(Platform.BILIBILI,),
+    )
+
+    class MultiPartPlatform(_Platform):
+        async def resolve(
+            self,
+            source_id: str,
+            canonical_url: str,
+            context: PlatformContext,
+        ) -> ResolvedSource:
+            self.resolve_count += 1
+            return ResolvedSource(
+                candidate_id=f"bilibili:{source_id}",
+                media_units=tuple(
+                    MediaUnit(
+                        platform=Platform.BILIBILI,
+                        source_id=source_id,
+                        media_unit_id=f"{source_id}_part_{index}",
+                        canonical_url=f"{canonical_url}?p={index}",
+                        title=title,
+                        duration_seconds=30,
+                        part_index=index,
+                    )
+                    for index, title in enumerate(("宫殿全景", "枫叶特写"), start=1)
+                ),
+            )
+
+    adapter = MultiPartPlatform(Platform.BILIBILI, title="辽东秋色合集")
+    adapters = {
+        platform: adapter if platform is Platform.BILIBILI else _Platform(platform)
+        for platform in PLATFORM_ORDER
+    }
+    workflow = _make_workflow(
+        _Authentication(),
+        adapters,
+        SessionRuntime(lease_ttl_seconds=900),
+    )
+
+    await workflow.run(workspace, session_id)
+
+    files = list(
+        (workspace / "materials" / "by-session" / session_id).rglob("*.mp4")
+    )
+    assert len(files) == 2
+    assert len({path.parts[-3] for path in files}) == 1
+    assert files[0].parts[-3].startswith("辽东秋色合集__bilibili__")
+    assert {path.name.split("__", 1)[0] for path in files} == {
+        "宫殿全景",
+        "枫叶特写",
+    }
+
+
+@pytest.mark.asyncio
+async def test_title_view_publish_failure_resumes_without_redownloading(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace, session_id = _create_session(
+        tmp_path,
+        platform_scope=(Platform.BILIBILI,),
+    )
+    adapter = _Platform(Platform.BILIBILI, title="可恢复命名")
+    adapters = {
+        platform: adapter if platform is Platform.BILIBILI else _Platform(platform)
+        for platform in PLATFORM_ORDER
+    }
+    workflow = _make_workflow(
+        _Authentication(),
+        adapters,
+        SessionRuntime(lease_ttl_seconds=900),
+    )
+    original = WorkspaceAssetStore.publish_title_view
+    attempts = 0
+
+    def fail_once(
+        store: WorkspaceAssetStore,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise CollectorError(
+                "named_view_publish_failed",
+                "temporary publish failure",
+                details={"retryable": True},
+            )
+        return original(store, *args, **kwargs)
+
+    monkeypatch.setattr(WorkspaceAssetStore, "publish_title_view", fail_once)
+
+    with pytest.raises(CollectorError) as captured:
+        await workflow.run(workspace, session_id)
+
+    assert captured.value.code == "named_view_publish_failed"
+    assert adapter.fetch_count == 1
+    result = await workflow.run(workspace, session_id)
+
+    assert result.proxies_ready == 1
+    assert adapter.fetch_count == 1
+    manifest = workflow._manifest.export(workspace, session_id)
+    asset = manifest.candidates[0].media_units[0].proxy_asset
+    assert asset is not None
+    assert asset.display_relative_path is not None
+
+
+@pytest.mark.asyncio
 async def test_workflow_uses_frozen_request_timeout_for_every_platform_call(
     tmp_path: Path,
 ) -> None:
@@ -623,7 +986,7 @@ async def test_each_search_expression_uses_per_platform_limit_of_twenty(
     workspace, session_id = _create_session(
         tmp_path,
         max_videos=9,
-        add_bilibili_query=True,
+        add_second_query=True,
     )
     adapters = {platform: _Platform(platform) for platform in PLATFORM_ORDER}
     workflow = _make_workflow(
@@ -635,8 +998,8 @@ async def test_each_search_expression_uses_per_platform_limit_of_twenty(
     await workflow.run(workspace, session_id)
 
     assert adapters[Platform.BILIBILI].seen_search_limits == [20, 20]
-    assert adapters[Platform.DOUYIN].seen_search_limits == [20]
-    assert adapters[Platform.XIAOHONGSHU].seen_search_limits == [20]
+    assert adapters[Platform.DOUYIN].seen_search_limits == [20, 20]
+    assert adapters[Platform.XIAOHONGSHU].seen_search_limits == [20, 20]
 
 
 @pytest.mark.asyncio
@@ -709,21 +1072,44 @@ async def test_same_author_and_title_downloads_every_platform_before_fingerprint
     assert adapters[Platform.BILIBILI].fetch_count == 1
     assert adapters[Platform.DOUYIN].fetch_count == 1
     assert adapters[Platform.XIAOHONGSHU].fetch_count == 1
-    manifest = workflow._manifest.export(workspace, session_id)
-    assert len(manifest.work_groups) == 1
-    group = manifest.work_groups[0]
-    assert group.status == "confirmed_duplicate"
-    assert group.primary_media_unit_id.startswith("bilibili:")
-    assert [member.platform for member in group.members] == list(PLATFORM_ORDER)
-    assert [member.fallback_order for member in group.members] == [1, 2, 3]
+    result_path = (
+        workspace
+        / ".material-collector"
+        / "sessions"
+        / session_id
+        / "collection-result.json"
+    )
+    manifest = json.loads(result_path.read_text(encoding="utf-8"))
+    assert len(manifest["work_groups"]) == 1
+    group = manifest["work_groups"][0]
+    assert group["status"] == "confirmed_duplicate"
+    assert group["primary_media_unit_id"].startswith("bilibili:")
+    assert [member["platform"] for member in group["members"]] == [
+        platform.value for platform in PLATFORM_ORDER
+    ]
+    assert [member["fallback_order"] for member in group["members"]] == [1, 2, 3]
     assert (
         sum(
-            unit.eligible_for_understanding
-            for candidate in manifest.candidates
-            for unit in candidate.media_units
+            unit["eligible_for_understanding"]
+            for candidate in manifest["candidates"]
+            for unit in candidate["media_units"]
         )
         == 1
     )
+    assets = [
+        unit["proxy_asset"]
+        for candidate in manifest["candidates"]
+        for unit in candidate["media_units"]
+    ]
+    assert sum(
+        asset is not None and asset["display_relative_path"] is not None
+        for asset in assets
+    ) == 1
+    assert all(
+        asset is not None and asset["relative_path"].startswith("assets/sha256/")
+        for asset in assets
+    )
+    assert len(list((workspace / "materials" / "by-session" / session_id).rglob("*.mp4"))) == 1
     comparisons = fingerprints.compare_count
 
     await workflow.run(workspace, session_id)
@@ -1139,7 +1525,7 @@ async def test_rendered_search_challenge_pauses_for_human(tmp_path: Path) -> Non
     workspace, session_id = _create_session(
         tmp_path,
         max_videos=9,
-        add_xiaohongshu_query=True,
+        add_second_query=True,
     )
     adapters = {platform: _Platform(platform) for platform in PLATFORM_ORDER}
     adapters[Platform.XIAOHONGSHU].search_failures.extend(
@@ -1177,8 +1563,8 @@ async def test_rendered_search_challenge_pauses_for_human(tmp_path: Path) -> Non
         for event, details in progress.events
         if event == "search_plan_settled"
     )
-    assert settled["requested_requests"] == 4
-    assert settled["completed_requests"] == 2
+    assert settled["requested_requests"] == 6
+    assert settled["completed_requests"] == 4
     assert settled["failed_requests"] == 1
     assert settled["not_attempted_requests"] == 1
 
@@ -1239,7 +1625,7 @@ async def test_cancel_is_observed_between_serial_platform_requests(
     workspace, session_id = _create_session(
         tmp_path,
         max_videos=9,
-        add_bilibili_query=True,
+        add_second_query=True,
     )
     runtime = SessionRuntime(lease_ttl_seconds=900)
 

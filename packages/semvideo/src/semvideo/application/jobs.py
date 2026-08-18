@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import time
+from pathlib import Path
 from typing import Any
 
+from semvideo.application.execution_config import FrozenExecutionConfig
 from semvideo.application.launcher import launch_worker
 from semvideo.application.locking import application_file_lock
 from semvideo.application.progress import ProgressSink, stage_progress
@@ -33,9 +34,7 @@ PROCESS_STAGES = (
     "retrieval",
     "render",
 )
-TERMINAL_STATES = frozenset(
-    {"completed", "failed", "cancelled", "interrupted"}
-)
+TERMINAL_STATES = frozenset({"completed", "failed", "cancelled", "interrupted"})
 
 
 def _admission_snapshot(
@@ -47,10 +46,7 @@ def _admission_snapshot(
     active_jobs: list[dict[str, Any]] = []
     for job_id in store.list_job_ids():
         snapshot = get_job_snapshot(store, job_id)
-        if (
-            snapshot["state"] in TERMINAL_STATES
-            or job_id in exempt_job_ids
-        ):
+        if snapshot["state"] in TERMINAL_STATES or job_id in exempt_job_ids:
             continue
         active_jobs.append(
             {
@@ -70,9 +66,7 @@ def _admission_snapshot(
             0,
             configured_limit - active_count,
         ),
-        "active_job_ids": [
-            str(row["job_id"]) for row in active_jobs
-        ],
+        "active_job_ids": [str(row["job_id"]) for row in active_jobs],
         "active_jobs": active_jobs,
     }
 
@@ -149,9 +143,7 @@ def wait_for_job(
         snapshot = get_job_snapshot(store, job_id)
         state = str(snapshot["state"])
         stage = (
-            str(snapshot["current_stage"])
-            if snapshot.get("current_stage")
-            else state
+            str(snapshot["current_stage"]) if snapshot.get("current_stage") else state
         )
         marker = (state, snapshot.get("current_stage"))
         if progress_sink is not None and marker != last_marker:
@@ -188,6 +180,7 @@ def submit_job(
     """Register a source, create or reuse a job, and launch its Worker."""
 
     config = load_workspace_config(workspace.data)
+    frozen_config = FrozenExecutionConfig.freeze(config)
     if profile != config.profile:
         raise config_error(
             "profile_not_found",
@@ -201,17 +194,11 @@ def submit_job(
             "kind": "local_file",
             "original_filename": source["original_filename"],
         },
-        "overrides": (
-            {"render_final_segments": render}
-            if render is not None
-            else {}
-        ),
+        "overrides": ({"render_final_segments": render} if render is not None else {}),
     }
     with application_file_lock(workspace.locks / "submit.lock"):
         existing = (
-            store.find_by_idempotency_key(idempotency_key)
-            if idempotency_key
-            else None
+            store.find_by_idempotency_key(idempotency_key) if idempotency_key else None
         )
         reused = existing is not None
         if existing:
@@ -219,6 +206,7 @@ def submit_job(
                 existing["source_video_id"] != source["source_video_id"]
                 or existing["profile"] != profile
                 or existing["request"] != request
+                or existing.get("execution_config_hash") != frozen_config.config_hash
             ):
                 raise config_error(
                     "idempotency_key_conflict",
@@ -237,6 +225,7 @@ def submit_job(
                 profile=profile,
                 request=request,
                 idempotency_key=idempotency_key,
+                **frozen_config.as_job_fields(),
             )
         if existing:
             state = store.reconcile_interrupted(str(job["job_id"]))

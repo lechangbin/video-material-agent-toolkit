@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict
 from material_collector.application.ports import AssetStoreFactory, MediaFetcher
 from material_collector.application.sessions import CONTROL_DIRECTORY, SESSIONS_DIRECTORY
 from material_collector.application.source_manifest import SourceManifestApplication
+from material_collector.application.title_views import publish_and_record_title_view
 from material_collector.core.errors import CollectorError, ContractError
 from material_collector.core.manifest import (
     CollectionResult,
@@ -18,11 +19,13 @@ from material_collector.core.manifest import (
     ManifestMediaUnit,
 )
 from material_collector.core.media import (
+    BrowserChannel,
     FetchRequest,
     MediaQuality,
     MediaUnit,
     Platform,
     PlatformContext,
+    TitleViewPublication,
 )
 
 
@@ -131,6 +134,7 @@ class MediaApplication:
         media_unit_id: str,
         *,
         auth_profile: str,
+        browser_channel: BrowserChannel,
         request_timeout_seconds: int = 30,
     ) -> HighQualityFetchView:
         result = self._manifest.export(workspace, session_id)
@@ -140,6 +144,8 @@ class MediaApplication:
                 "Rejected media cannot be fetched.",
                 details={"media_unit_id": media_unit_id},
             )
+        normalized_workspace = Path(result.workspace_path)
+        asset_store = self._asset_stores.for_workspace(normalized_workspace)
         if media_unit.high_quality_asset is not None:
             asset = media_unit.high_quality_asset
         else:
@@ -149,10 +155,6 @@ class MediaApplication:
                     "No media fetcher is configured for this platform.",
                     details={"platform": candidate.platform.value},
                 )
-            normalized_workspace = Path(result.workspace_path)
-            asset_store = self._asset_stores.for_workspace(
-                normalized_workspace
-            )
             temporary = asset_store.allocate_staging_path(
                 session_id,
                 media_unit.media_unit_id,
@@ -167,6 +169,7 @@ class MediaApplication:
                     ),
                     PlatformContext(
                         auth_profile=auth_profile,
+                        browser_channel=browser_channel,
                         request_timeout_seconds=request_timeout_seconds,
                     ),
                 )
@@ -181,6 +184,22 @@ class MediaApplication:
                     asset_store.discard_staging(temporary)
                 except CollectorError:
                     pass
+        if media_unit.source_role == "primary":
+            asset, recorded = publish_and_record_title_view(
+                manifest=self._manifest,
+                asset_store=asset_store,
+                workspace=normalized_workspace,
+                asset=asset,
+                publication=TitleViewPublication(
+                    session_id=session_id,
+                    platform=candidate.platform,
+                    source_id=candidate.source_id,
+                    source_title=candidate.title,
+                    media_unit_title=media_unit.title,
+                ),
+            )
+            if recorded is not None:
+                result = recorded
         return HighQualityFetchView(
             session_id=session_id,
             workspace_path=result.workspace_path,

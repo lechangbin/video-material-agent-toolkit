@@ -75,7 +75,7 @@ semvideo --version --json
 也可以安装已经构建的 wheel：
 
 ```powershell
-python -m pip install .\dist\semvideo-0.1.3-py3-none-any.whl
+python -m pip install .\dist\semvideo-0.1.4-py3-none-any.whl
 ```
 
 开发环境：
@@ -86,6 +86,15 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 .\.venv\Scripts\semvideo.exe init .
 $env:SEMVIDEO_API_KEY = '<your key>'
+.\.venv\Scripts\semvideo.exe doctor --workspace . --json
+```
+
+选择 Agnes 2.5 Flash 时使用公开配置命令；它会固定 512K 总上下文、默认
+504K 输入预算、8K 输出保留和最多 2 个同时在途请求，不需要手工编辑配置：
+
+```powershell
+.\.venv\Scripts\semvideo.exe config set-llm-provider agnes --workspace . --json
+$env:AGNES_API_KEY = '<your key>'
 .\.venv\Scripts\semvideo.exe doctor --workspace . --json
 ```
 
@@ -151,7 +160,7 @@ Copy-Item -Recurse .\skills\semvideo `
   "$env:USERPROFILE\.codex\skills\semvideo"
 ```
 
-CLI 与 Skill 必须成对使用：当前均为 `0.1.3`，Skill 协议版本为 `1`。
+CLI 与 Skill 必须成对使用：当前均为 `0.1.4`，Skill 协议版本为 `1`。
 Skill 会先运行 `scripts/resolve_semvideo.py`，发现并验证 CLI 的绝对路径，因此
 目标 Agent 不需要继承用户级 Python Scripts 的 PATH。安装副本不得直接修改；
 所有变更先落到仓库 `skills/semvideo/`，再重新复制或打包。

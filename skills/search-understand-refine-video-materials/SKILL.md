@@ -18,7 +18,9 @@ Before starting, read:
 3. the installed `semvideo/SKILL.md`;
 4. the sibling `select-video-segments/SKILL.md` and its selection contract.
 
-Use the bundled Collector runner for every Collector operation. Use only Semvideo's
+Resolve the Collector once through the direct collection Skill and reuse that validated absolute
+command for workflow initialization and every Collector runner call. Use the bundled Collector
+runner for every lifecycle operation. Use only Semvideo's
 public CLI and always pass its mandatory context gate before a processing or
 recovery mutation. Run segment selection in the isolated subagent required by
 `select-video-segments`.
@@ -28,6 +30,7 @@ recovery mutation. Run segment selection in the isolated subagent required by
 Require:
 
 - versioned collection input containing the full script and theme segments;
+- a caller-chosen non-empty collection platform scope;
 - an existing material workspace;
 - an initialized Semvideo workspace and profile;
 - a caller-chosen workflow root;
@@ -36,10 +39,10 @@ Require:
 An existing initial QueryPlan file is optional. When it is absent, the parent Agent
 must read the full script and every theme segment, derive the visual strategy and
 required visual facets, then write one versioned QueryPlan per segment before
-initialization. This orchestration is intentionally stricter than the generic
-Collector QueryPlan contract: every expression targets Bilibili, Douyin, and
-Xiaohongshu. The search cap remains 20 results for that expression on each
-platform. Do not reinterpret it as a shared three-platform cap.
+initialization. Write the scope once at the top of QueryPlans 2.0 and copy the
+complete frozen scope into every initial expression. The search cap remains 20
+results for that expression on each in-scope platform. Do not reinterpret it as
+a shared multi-platform cap.
 
 ## Plan and initialize once
 
@@ -50,12 +53,12 @@ to the Top-K subagent and do not derive it from search-result titles.
 
 Run `scripts/init_workflow.py` to freeze semantic input, paths, hashes, budgets,
 normalized optional IDs, and workflow identity. Pass the absolute installed
-`material-collector` executable through `--collector`; initialization calls its
+Collector command returned by the direct Skill resolver through `--collector`; initialization calls its
 read-only `contracts normalize` command so the frozen snapshot exactly matches
 session creation. If the workflow root already
 contains conflicting frozen input, stop instead of overwriting it.
 
-Process theme segments serially. Multi-platform concurrency belongs inside one
+Process theme segments serially. In-scope platform concurrency belongs inside one
 Collector session; do not create competing Collector sessions that share browser
 profiles. Semvideo submissions may run concurrently only up to the context gate's
 reported admission allowance.

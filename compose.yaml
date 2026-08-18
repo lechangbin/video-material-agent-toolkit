@@ -1,0 +1,38 @@
+name: video-material-agent-toolkit
+
+services:
+  toolkit:
+    build:
+      context: .
+    image: video-material-agent-toolkit:local
+    platform: linux/amd64
+    environment:
+      - DISPLAY=:99
+      - DISPLAY_WIDTH=${VIDEO_TOOLKIT_DISPLAY_WIDTH:-1440}
+      - DISPLAY_HEIGHT=${VIDEO_TOOLKIT_DISPLAY_HEIGHT:-900}
+      - DISPLAY_DEPTH=24
+      - HOME=/home/toolkit
+      - LOCALAPPDATA=/data/localappdata
+      - XDG_CONFIG_HOME=/data/config
+      - XDG_CACHE_HOME=/data/cache
+      - HF_HOME=/data/cache/huggingface
+      - SEMVIDEO_API_KEY
+      - AGNES_API_KEY
+      - SEMVIDEO_BASE_URL
+      - SEMVIDEO_MODEL
+    volumes:
+      - type: bind
+        source: "${VIDEO_TOOLKIT_DATA:-./docker-data}"
+        target: /data
+    ports:
+      - "127.0.0.1:${VIDEO_TOOLKIT_NOVNC_PORT:-6080}:6080"
+    ipc: host
+    security_opt:
+      - seccomp=./docker/seccomp_profile.json
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:6080/vnc.html"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s

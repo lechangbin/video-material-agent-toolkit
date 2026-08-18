@@ -11,3 +11,5 @@ LICENSE text eol=lf
 *.json text eol=lf
 *.lock text eol=lf
 *.ps1 text eol=crlf
+*.sh text eol=lf
+Dockerfile text eol=lf

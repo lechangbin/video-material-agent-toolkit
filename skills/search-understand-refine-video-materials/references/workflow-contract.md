@@ -8,7 +8,7 @@ tool's authoritative state.
 
 | Owner | Responsibility | Authoritative state |
 | --- | --- | --- |
-| `material-collector` | Search three platforms, resolve works, download 720p proxies | session SQLite and `collection-result.json` |
+| `material-collector` | Search the frozen platform scope, resolve works, download 720p proxies | session SQLite and `collection-result.json` |
 | Semvideo | Understand one physical proxy and expose complete semantic segments | Semvideo public job and segment CLI |
 | `select-video-segments` | Rank one cumulative candidate catalog into a bounded Top-K | selection v2 result and audit |
 | Parent Agent | Judge sufficiency against the original script and create gap queries | `gap-decision.json` |
@@ -102,6 +102,14 @@ python scripts/prepare_understanding_batch.py `
   --output <round-dir>\understanding-batch.json
 ```
 
+The generated `video-material-understanding-batch/v2` copies the workflow's frozen
+`platform_scope`. Every collection result must declare that exact scope, and every
+candidate platform must belong to it; later round planning rechecks the same field.
+Collector assets may also expose a human-readable `display_relative_path` for the work-group
+primary. The bridge must continue resolving and hashing `relative_path`, which is the authoritative
+content-addressed proxy; `display_relative_path` is an optional editing view and is null for
+fallback sources.
+
 For every batch item without a job mapping:
 
 1. copy forward the prior round's valid job mappings into the current cumulative
@@ -179,7 +187,7 @@ totals, so its per-round admission rule remains valid. `occupied_media_units` co
 all stable downloaded proxies across prior rounds, including cross-platform
 fallback copies. Understanding deduplication does not refund search/download budget.
 
-Each query expression targets all three phase-one platforms. Each platform may
+Each query expression targets the complete frozen `platform_scope`. Each selected platform may
 return at most 20 results for that expression.
 
 ## Gap decision
@@ -220,7 +228,7 @@ The parent Agent writes:
     {
       "query_id": "q_seg_001_round_002_01",
       "text": "targeted search expression",
-      "target_platforms": ["bilibili", "douyin", "xiaohongshu"],
+      "target_platforms": ["bilibili"],
       "facet_ids": ["facet_..."]
     }
   ]
@@ -233,8 +241,8 @@ previous round. `previous_query_texts` must contain the normalized cumulative qu
 history through the current round and must match every prior `query-plans.json`
 passed to `plan_round.py`. Pass exactly one distinct QueryPlan artifact for every
 prior round; missing or repeated artifacts are rejected. Every facet ID must belong
-to the frozen QueryPlan, and every supplemental expression must target all three
-platforms. The decision must reference the current
+to the frozen QueryPlan, and every supplemental expression must target the complete
+frozen `platform_scope` (the example above shows a Bilibili-only workflow). The decision must reference the current
 selection result; selection coverage alone is not the judgment.
 
 If the decision is insufficient but no budget remains, retain the decision and

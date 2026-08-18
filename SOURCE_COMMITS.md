@@ -1,6 +1,6 @@
 # Source commits
 
-Version `0.1.3` imports source snapshots from these local Git repositories:
+Toolkit version `0.2.0` imports source snapshots from these local Git repositories:
 
 | Package | Commit | Subject |
 | --- | --- | --- |

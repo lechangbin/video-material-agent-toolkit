@@ -1,15 +1,33 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
+import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
-SKILL_ROOT = Path(__file__).parents[3] / "skills" / "collect-video-materials"
+REPOSITORY_ROOT = Path(__file__).parents[3]
+SKILL_ROOT = REPOSITORY_ROOT / "skills" / "collect-video-materials"
 RUNNER = SKILL_ROOT / "scripts" / "invoke-collector.ps1"
+RESOLVER = SKILL_ROOT / "scripts" / "resolve_material_collector.py"
+BOOTSTRAP = REPOSITORY_ROOT / "scripts" / "bootstrap-agent.ps1"
+POWERSHELL_HOSTS = [
+    host for host in ("powershell", "pwsh") if shutil.which(host) is not None
+]
+
+
+def _load_resolver() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("material_collector_skill_resolver", RESOLVER)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_skill_distinguishes_partial_search_progress_from_final_status() -> None:
@@ -21,10 +39,149 @@ def test_skill_distinguishes_partial_search_progress_from_final_status() -> None
     assert "Do not issue `resume` merely because one platform" in normalized
 
 
-def test_skill_runner_rejects_model_authored_operations() -> None:
+def test_skill_exposes_complete_inputs_and_lifecycle_commands_without_probing() -> None:
+    skill = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
+    inputs = (SKILL_ROOT / "references" / "input-contracts.md").read_text(
+        encoding="utf-8"
+    )
+    execution = (SKILL_ROOT / "references" / "cli-execution-contract.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "do not discover either contract with `--help`" in " ".join(skill.split())
+    assert '"full_script"' in inputs
+    assert '"platform_scope"' in inputs
+    assert '"target_platforms"' in inputs
+    for operation in ("run", "resume", "status", "cancel"):
+        assert f"--operation {operation}" in execution
+
+
+def test_skill_links_versioned_schemas_examples_and_read_only_schema_command() -> None:
+    inputs = (SKILL_ROOT / "references" / "input-contracts.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "schemas/collection-input-1.0.schema.json" in inputs
+    assert "schemas/query-plans-2.0.schema.json" in inputs
+    assert "examples/collection-input-1.0.min.json" in inputs
+    assert "examples/query-plans-2.0.min.json" in inputs
+    assert "<collector> contracts schema" in inputs
+    assert (
+        "<collector> contracts normalize --input <collection-input.json> "
+        "--query-plans <query-plans.json>"
+    ) in " ".join(inputs.split())
+
+
+def test_skill_resolver_returns_the_compatible_installed_cli() -> None:
+    resolved_cli = shutil.which(
+        "material-collector",
+        path=str(Path(sys.executable).parent),
+    )
+    assert resolved_cli is not None
+    environment = os.environ.copy()
+    environment["MATERIAL_COLLECTOR_CLI"] = resolved_cli
+
+    completed = subprocess.run(
+        [sys.executable, str(RESOLVER)],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=environment,
+        timeout=10,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout)
+    assert payload["schema_version"] == 1
+    assert payload["ok"] is True
+    assert payload["command"] == str(Path(resolved_cli).resolve())
+    assert payload["cli_version"] == "0.2.0"
+    assert payload["skill_protocol_version"] == 1
+
+
+def test_skill_resolver_accepts_only_the_matching_cli_protocol(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    resolver = _load_resolver()
+    candidate = tmp_path / "material-collector.exe"
+    candidate.touch()
+    monkeypatch.setenv("MATERIAL_COLLECTOR_CLI", str(candidate))
+    monkeypatch.setattr(
+        resolver.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0],
+            0,
+            json.dumps(
+                {
+                    "schema_version": "material-collector-version/v1",
+                    "cli_version": "0.2.0",
+                    "skill_protocol_version": 1,
+                    "collection_input_schema": {"min": "1.0", "max": "1.0"},
+                    "query_plans_schema": {"min": "2.0", "max": "2.0"},
+                }
+            ),
+            "",
+        ),
+    )
+
+    exit_code = resolver.main()
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert payload["ok"] is True
+    assert payload["command"] == str(candidate.resolve())
+    assert payload["cli_version"] == "0.2.0"
+    assert payload["skill_protocol_version"] == 1
+
+
+def test_skill_resolver_reports_an_incompatible_cli_without_source_probing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    resolver = _load_resolver()
+    candidate = tmp_path / "material-collector.exe"
+    candidate.touch()
+    monkeypatch.setenv("MATERIAL_COLLECTOR_CLI", str(candidate))
+    monkeypatch.setattr(
+        resolver.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0],
+            0,
+            json.dumps(
+                {
+                    "schema_version": "material-collector-version/v1",
+                    "cli_version": "0.1.3",
+                    "skill_protocol_version": 1,
+                    "collection_input_schema": {"min": "1.0", "max": "1.0"},
+                    "query_plans_schema": {"min": "2.0", "max": "2.0"},
+                }
+            ),
+            "",
+        ),
+    )
+
+    exit_code = resolver.main()
+
+    payload = json.loads(capsys.readouterr().err)
+    assert exit_code == 4
+    assert payload["code"] == "material_collector_cli_incompatible"
+    assert payload["expected"]["cli_version"] == "0.2.0"
+    assert payload["actual"]["cli_version"] == "0.1.3"
+
+
+@pytest.mark.parametrize("powershell_host", POWERSHELL_HOSTS)
+def test_skill_runner_rejects_model_authored_operations(
+    powershell_host: str,
+) -> None:
     completed = subprocess.run(
         [
-            "pwsh",
+            powershell_host,
             "-NoProfile",
             "-File",
             str(RUNNER),
@@ -49,6 +206,25 @@ def test_skill_runner_rejects_model_authored_operations() -> None:
     }
 
 
+def test_skill_runner_delegates_lifecycle_to_collector_executor() -> None:
+    source = RUNNER.read_text(encoding="utf-8")
+
+    assert "$arguments.Add('executor')" in source
+    assert "Start-Process" not in source
+    assert "Get-Process" not in source
+    assert "process_start_ticks" not in source
+
+
+def test_native_bootstrap_exposes_edge_first_browser_selection() -> None:
+    source = BOOTSTRAP.read_text(encoding="utf-8")
+
+    assert "[string]$BrowserChannel = 'auto'" in source
+    assert "@('auto', 'edge', 'chrome') -notcontains $BrowserChannel" in source
+    assert "foreach ($candidate in @('edge', 'chrome'))" in source
+    assert "-BrowserChannel $BrowserChannel" in source
+    assert "Test-ChromeAvailable" not in source
+
+
 @pytest.mark.parametrize(
     ("extra_arguments", "expected_code"),
     [
@@ -57,6 +233,8 @@ def test_skill_runner_rejects_model_authored_operations() -> None:
         (["-MaxVideos", "0"], "max_videos_invalid"),
         (["-ProgressFormat", "xml"], "progress_format_invalid"),
         (["-CollectorPath", ""], "collector_path_invalid"),
+        (["-ResolvedCollectorPath", ""], "resolved_collector_path_invalid"),
+        (["-BrowserChannel", "firefox"], "browser_channel_invalid"),
         (["-Bogus", "value"], "arguments_invalid"),
     ],
 )
@@ -95,6 +273,31 @@ def test_skill_runner_returns_json_for_invalid_script_parameters(
     assert payload["error"]["code"] == expected_code
 
 
+@pytest.mark.parametrize("powershell_host", POWERSHELL_HOSTS)
+def test_native_bootstrap_returns_json_for_invalid_browser_channel(
+    powershell_host: str,
+) -> None:
+    completed = subprocess.run(
+        [
+            powershell_host,
+            "-NoProfile",
+            "-File",
+            str(BOOTSTRAP),
+            "-CheckOnly",
+            "-BrowserChannel",
+            "firefox",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert completed.returncode == 1
+    assert completed.stderr == ""
+    assert json.loads(completed.stdout)["status"] == "error"
+
+
 def test_skill_runner_reports_missing_collector_as_structured_error(
     tmp_path: Path,
 ) -> None:
@@ -124,8 +327,55 @@ def test_skill_runner_reports_missing_collector_as_structured_error(
     assert payload["error"]["code"] == "collector_not_found"
 
 
+def test_skill_runner_uses_resolver_selected_cli_before_stale_path_entry(
+    tmp_path: Path,
+) -> None:
+    compatible_cli = shutil.which(
+        "material-collector",
+        path=str(Path(sys.executable).parent),
+    )
+    assert compatible_cli is not None
+    stale_bin = tmp_path / "stale-bin"
+    stale_bin.mkdir()
+    stale_marker = tmp_path / "stale-used.txt"
+    (stale_bin / "material-collector.cmd").write_text(
+        f'@echo off\necho stale>"{stale_marker}"\nexit /b 99\n',
+        encoding="utf-8",
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    completed = subprocess.run(
+        [
+            "pwsh",
+            "-NoProfile",
+            "-File",
+            str(RUNNER),
+            "-Operation",
+            "status",
+            "-ResolvedCollectorPath",
+            compatible_cli,
+            "-Workspace",
+            str(workspace),
+            "-SessionId",
+            "ses_missing",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={**os.environ, "PATH": f"{stale_bin}{os.pathsep}{os.environ['PATH']}"},
+    )
+
+    assert completed.returncode == 40
+    assert json.loads(completed.stdout)["error"]["code"] == "session_not_found"
+    assert not stale_marker.exists()
+
+
+@pytest.mark.parametrize("powershell_host", POWERSHELL_HOSTS)
 def test_skill_runner_starts_run_with_preserved_argument_boundaries(
     tmp_path: Path,
+    powershell_host: str,
 ) -> None:
     workspace = tmp_path / "素材 workspace"
     workspace.mkdir()
@@ -151,7 +401,7 @@ def test_skill_runner_starts_run_with_preserved_argument_boundaries(
 
     completed = subprocess.run(
         [
-            "pwsh",
+            powershell_host,
             "-NoProfile",
             "-File",
             str(RUNNER),
@@ -169,6 +419,9 @@ def test_skill_runner_starts_run_with_preserved_argument_boundaries(
             "2",
             "-MaxVideos",
             "7",
+            "-BrowserChannel",
+            "chrome",
+            "-ShowSearchBrowsers",
             "-ControlDirectory",
             str(tmp_path / "control"),
         ],
@@ -197,7 +450,7 @@ def test_skill_runner_starts_run_with_preserved_argument_boundaries(
     while time.monotonic() < deadline:
         if captured_args.exists():
             captured_lines = captured_args.read_text(encoding="utf-8").splitlines()
-            if len(captured_lines) == 16:
+            if len(captured_lines) == 19:
                 break
         time.sleep(0.05)
     assert captured_lines == [
@@ -214,6 +467,9 @@ def test_skill_runner_starts_run_with_preserved_argument_boundaries(
         "2",
         "--max-videos",
         "7",
+        "--browser-channel",
+        "chrome",
+        "--show-search-browsers",
         "--progress-format",
         "jsonl",
     ]

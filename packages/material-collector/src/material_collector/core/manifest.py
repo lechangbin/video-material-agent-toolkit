@@ -102,9 +102,10 @@ class ManifestCandidate(_ManifestModel):
 
 
 class CollectionResult(_ManifestModel):
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["2.0"] = "2.0"
     session_id: str
     workspace_path: str
+    platform_scope: tuple[Platform, ...]
     session_status: str
     state_version: int
     generated_at: str

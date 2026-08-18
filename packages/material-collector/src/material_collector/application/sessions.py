@@ -13,10 +13,12 @@ from material_collector.core.contracts import (
     QueryPlans,
     normalize_inline_text,
 )
+from material_collector.core.errors import SessionStateError
+from material_collector.core.media import BrowserChannel, Platform
 
 OUTPUT_SCHEMA_VERSION = "1.0"
-SESSION_SCHEMA_VERSION = 2
-SUPPORTED_SESSION_SCHEMA_VERSIONS = frozenset({1, SESSION_SCHEMA_VERSION})
+SESSION_SCHEMA_VERSION = 5
+SUPPORTED_SESSION_SCHEMA_VERSIONS = frozenset({SESSION_SCHEMA_VERSION})
 CONTROL_DIRECTORY = ".material-collector"
 SESSIONS_DIRECTORY = "sessions"
 WORKSPACE_MARKER = "workspace.json"
@@ -38,6 +40,7 @@ class RuntimeConstraints(_OutputModel):
     auth_profile: str = "default"
     auth_wait_seconds: int = Field(default=600, ge=1)
     request_timeout_seconds: int = Field(default=30, ge=1)
+    browser_channel: BrowserChannel = BrowserChannel.AUTO
 
     @field_validator("auth_profile")
     @classmethod
@@ -83,7 +86,9 @@ class SessionView(_OutputModel):
     input_sha256: str
     query_plans_snapshot_path: str
     query_plans_sha256: str
+    platform_scope: tuple[Platform, ...]
     constraints: RuntimeConstraints
+    selected_browser_channel: BrowserChannel | None = None
     segments: tuple[SessionSegmentView, ...]
     warnings: tuple[WarningView, ...]
     result_path: str | None
@@ -120,6 +125,13 @@ class SessionStore(Protocol):
         session_id: str,
     ) -> tuple[CollectionInput, QueryPlans]: ...
 
+    def freeze_browser_channel(
+        self,
+        workspace: Path,
+        session_id: str,
+        channel: BrowserChannel,
+    ) -> SessionView: ...
+
 
 class SessionApplication:
     """Interface used by CLI and workflows for session lifecycle operations."""
@@ -146,3 +158,13 @@ class SessionApplication:
         session_id: str,
     ) -> tuple[CollectionInput, QueryPlans]:
         return self._store.load_frozen_contracts(workspace, session_id)
+
+    def freeze_browser_channel(
+        self,
+        workspace: Path,
+        session_id: str,
+        channel: BrowserChannel,
+    ) -> SessionView:
+        if channel is BrowserChannel.AUTO:
+            raise SessionStateError("The automatic browser channel cannot be frozen.")
+        return self._store.freeze_browser_channel(workspace, session_id, channel)

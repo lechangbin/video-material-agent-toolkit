@@ -1,0 +1,94 @@
+{
+  "$defs": {
+    "CollectionSegmentDraft": {
+      "additionalProperties": false,
+      "properties": {
+        "segment_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Segment Id"
+        },
+        "order": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Order"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "content_suggestion": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Content Suggestion"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "CollectionSegmentDraft",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "full_script": {
+      "title": "Full Script",
+      "type": "string"
+    },
+    "theme": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Theme"
+    },
+    "segments": {
+      "items": {
+        "$ref": "#/$defs/CollectionSegmentDraft"
+      },
+      "minItems": 1,
+      "title": "Segments",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "full_script",
+    "segments"
+  ],
+  "title": "CollectionInputDraft",
+  "type": "object"
+}

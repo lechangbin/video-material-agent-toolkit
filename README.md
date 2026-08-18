@@ -11,11 +11,88 @@
 - 四个遵循开放 [Agent Skills 规范](https://agentskills.io/) 的 Skills，用于把搜索、
   理解、Top-K 选择和有界补搜编排为可追踪工作流。
 
-当前发布版本为 `0.1.3`，支持 Windows x64 和 CPython 3.14.6。
+当前工具包发布为 `v0.2.0`：Material Collector `0.2.0`，Semvideo `0.1.4`。
+支持 Windows x64 和 CPython `>=3.14.6,<3.15`。
+Docker 部署另支持 Linux/amd64 容器，并通过本机 noVNC 页面完成交互式平台登录。
 
 > 本项目提供技术工具，不授予任何第三方视频、音乐、肖像、平台数据或商标的使用权。
 > 使用者必须遵守目标平台条款、适用法律和素材权利要求。不要使用本项目绕过访问控制、
 > 大规模抓取或干扰平台服务。
+
+## 只把仓库地址交给 Agent
+
+可以。仓库根目录的 [`AGENTS.md`](AGENTS.md) 是 Agent 自举协议，
+[`scripts/bootstrap-agent.ps1`](scripts/bootstrap-agent.ps1) 是唯一的自动配置入口。把下面
+这段提示词和仓库地址交给任意具备 Windows PowerShell 与终端权限的 Agent：
+
+```text
+请配置这个仓库：https://github.com/lechangbin/video-material-agent-toolkit
+克隆默认分支，完整读取仓库根目录 AGENTS.md，并严格执行其中的 Fresh-machine setup。
+不要自行改写安装、PATH、进程控制或 Skills 复制命令。最后返回 bootstrap 脚本的完整
+JSON 结果，以及仍需我亲自完成的交互步骤。
+```
+
+Agent 会从仓库根目录执行：
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap-agent.ps1
+```
+
+该入口会检测并安装缺失的 Python 3.14、uv、Node.js、Edge/Chrome 浏览器通道和 FFmpeg，从最新 GitHub
+Release 下载并校验两个 wheel，然后通过 `npx skills` 给受支持的 Agent 安装全部四个
+Skills。它不会写入 API Key，也不会代替用户完成平台扫码登录。
+
+只检查、不修改机器：
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap-agent.ps1 -CheckOnly
+```
+
+如果 WorkBuddy 或其他自定义宿主未被 `npx skills` 识别，让 Agent 加上传入其 Skills
+根目录：
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap-agent.ps1 `
+  -AdditionalSkillsDirectory 'C:\path\to\workbuddy\skills'
+```
+
+自动配置结束后仍有两个有意保留的人工边界：用户通过安全环境注入
+`SEMVIDEO_API_KEY`；首次搜索需要登录时，用户在可见浏览器中完成扫码。视频工作区路径
+也必须由用户明确指定，然后 Agent 才运行 `semvideo init` 和 `semvideo doctor`。
+
+## Docker 一条命令部署
+
+已安装并启动 Docker Desktop 后，在仓库根目录执行：
+
+```powershell
+docker compose up -d --build
+```
+
+该命令构建并启动包含 `material-collector`、`semvideo`、Google Chrome、FFmpeg 和
+noVNC 桌面的 Linux/amd64 容器。默认把运行数据持久化到 Git 忽略的
+`./docker-data`，并只在本机回环地址开放登录页面：
+
+```text
+http://127.0.0.1:6080/vnc.html?autoconnect=1&resize=scale
+```
+
+部署成功后仍需明确初始化一个视频工作区：
+
+```powershell
+docker compose exec toolkit semvideo init /data/workspace --json
+docker compose exec toolkit semvideo doctor --workspace /data/workspace --json
+```
+
+运行采集命令使用同一个长驻容器，例如：
+
+```powershell
+docker compose exec toolkit material-collector sessions list --workspace /data/workspace
+```
+
+API Key 只从启动 Compose 的进程环境传入，不写进镜像、构建参数或仓库。宿主数据目录、
+首次登录、CLI 调用方式、Agent Skills 边界和停止方式见 [Docker 部署文档](docs/docker.md)。
+容器以非 root 用户运行，并使用 Playwright 官方建议的 seccomp 配置保持 Chromium
+sandbox 开启。
 
 ## 仓库结构
 
@@ -29,8 +106,13 @@ skills/
   select-video-segments/
   search-understand-refine-video-materials/
 scripts/
+  bootstrap-agent.ps1
   build-release.ps1
   install-tools.ps1
+docker/
+  toolkit-entrypoint.sh
+Dockerfile
+compose.yaml
 ```
 
 两个源码快照对应的原始 Git 提交见 [SOURCE_COMMITS.md](SOURCE_COMMITS.md)。
@@ -45,14 +127,19 @@ scripts/
 winget install --id Python.Python.3.14 --exact
 winget install --id astral-sh.uv --exact
 winget install --id OpenJS.NodeJS.LTS --exact
-winget install --id Google.Chrome --exact
 winget install --id Gyan.FFmpeg --exact
 ```
+
+Windows 原生模式默认使用 `--browser-channel auto`，按 Microsoft Edge、Google Chrome
+的顺序选择本机浏览器；系统已有 Edge 时无需额外安装 Chrome。若要固定 Chrome，可另行
+执行 `winget install --id Google.Chrome --exact` 并传入 `--browser-channel chrome`。
+首次安装也可向 `bootstrap-agent.ps1` 传入 `-BrowserChannel auto|edge|chrome`；默认 `auto`
+不会在 Edge 可用时要求安装 Chrome。
 
 重新打开 PowerShell，确认：
 
 ```powershell
-python --version   # 需要 Python 3.14.6
+python --version   # 需要 CPython >=3.14.6,<3.15
 uv --version
 node --version
 ffmpeg -version
@@ -68,15 +155,15 @@ FFmpeg 构建，请自行核对该构建的许可证和编码器配置。
 下载：
 
 ```text
-video_material_collector-0.1.3-py3-none-any.whl
-semvideo-0.1.3-py3-none-any.whl
+video_material_collector-0.2.0-py3-none-any.whl
+semvideo-0.1.4-py3-none-any.whl
 SHA256SUMS.txt
 ```
 
 也可以使用 GitHub CLI：
 
 ```powershell
-gh release download v0.1.3 `
+gh release download v0.2.0 `
   --repo lechangbin/video-material-agent-toolkit `
   --dir .\video-toolkit-release
 ```
@@ -84,18 +171,19 @@ gh release download v0.1.3 `
 验证 SHA-256 后安装：
 
 ```powershell
-uv tool install --python 3.14.6 `
-  .\video-toolkit-release\video_material_collector-0.1.3-py3-none-any.whl
+uv tool install --python 3.14 `
+  .\video-toolkit-release\video_material_collector-0.2.0-py3-none-any.whl
 
 python -m pip install --user `
-  .\video-toolkit-release\semvideo-0.1.3-py3-none-any.whl
+  .\video-toolkit-release\semvideo-0.1.4-py3-none-any.whl
 ```
 
 或者运行随 Release 下载的安装脚本；脚本会先验证两个 wheel 的 SHA-256：
 
 ```powershell
 .\video-toolkit-release\install-tools.ps1 `
-  -ReleaseDirectory .\video-toolkit-release
+  -ReleaseDirectory .\video-toolkit-release `
+  -BrowserChannel auto
 ```
 
 验证：
@@ -152,6 +240,16 @@ API Key 只通过目标机器的环境变量或安全凭据机制提供，不要
 $env:SEMVIDEO_API_KEY = '<在当前终端注入密钥>'
 
 semvideo init C:\video-workspace --json
+semvideo doctor --workspace C:\video-workspace --json
+```
+
+如需改用 Agnes 2.5 Flash，先通过公开命令选择固定的 512K Provider Profile，
+再从进程环境提供对应凭据：
+
+```powershell
+semvideo config set-llm-provider agnes `
+  --workspace C:\video-workspace --json
+$env:AGNES_API_KEY = '<在当前终端注入密钥>'
 semvideo doctor --workspace C:\video-workspace --json
 ```
 

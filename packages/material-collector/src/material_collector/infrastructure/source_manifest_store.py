@@ -70,6 +70,17 @@ class SqliteSourceManifestStore:
         session_id: str,
         batch: SearchBatch,
     ) -> CollectionResult:
+        session_view = self._sessions.get_session(workspace, session_id)
+        if batch.platform not in session_view.platform_scope:
+            raise ContractError(
+                "A search batch platform is outside the frozen platform scope.",
+                details={
+                    "platform": batch.platform.value,
+                    "platform_scope": [
+                        platform.value for platform in session_view.platform_scope
+                    ],
+                },
+            )
         database_path, session_dir = self._locations(workspace, session_id)
         with closing(sqlite3.connect(database_path, timeout=5.0)) as connection:
             connection.row_factory = sqlite3.Row
@@ -263,16 +274,18 @@ class SqliteSourceManifestStore:
                         asset_id,
                         sha256,
                         relative_path,
+                        display_relative_path,
                         size_bytes,
                         container,
                         duration_seconds,
                         width,
                         height
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(media_unit_id, quality) DO UPDATE SET
                         asset_id = excluded.asset_id,
                         sha256 = excluded.sha256,
                         relative_path = excluded.relative_path,
+                        display_relative_path = excluded.display_relative_path,
                         size_bytes = excluded.size_bytes,
                         container = excluded.container,
                         duration_seconds = excluded.duration_seconds,
@@ -285,6 +298,7 @@ class SqliteSourceManifestStore:
                         asset.asset_id,
                         asset.sha256,
                         asset.relative_path,
+                        asset.display_relative_path,
                         asset.size_bytes,
                         asset.container,
                         asset.duration_seconds,
@@ -460,11 +474,30 @@ class SqliteSourceManifestStore:
                     candidate_id
                 """
             ).fetchall()
+            allowed_platforms = {
+                platform.value for platform in session_view.platform_scope
+            }
+            out_of_scope_platforms = sorted(
+                {
+                    str(row["platform"])
+                    for row in candidate_rows
+                    if row["platform"] not in allowed_platforms
+                }
+            )
+            if out_of_scope_platforms:
+                raise SessionStateError(
+                    "Stored candidates exceed the frozen platform scope.",
+                    details={
+                        "out_of_scope_platforms": out_of_scope_platforms,
+                        "platform_scope": sorted(allowed_platforms),
+                    },
+                )
             candidates = tuple(_candidate_from_row(connection, row) for row in candidate_rows)
             work_groups = _work_groups_from_connection(connection)
         result = CollectionResult(
             session_id=session_id,
             workspace_path=session_view.workspace_path,
+            platform_scope=session_view.platform_scope,
             session_status=session_view.status,
             state_version=session_view.state_version,
             generated_at=_iso_utc(self._now()),
@@ -527,6 +560,7 @@ def _ensure_manifest_schema(connection: sqlite3.Connection) -> None:
             asset_id TEXT NOT NULL,
             sha256 TEXT NOT NULL,
             relative_path TEXT NOT NULL,
+            display_relative_path TEXT,
             size_bytes INTEGER NOT NULL,
             container TEXT,
             duration_seconds REAL,
@@ -812,6 +846,9 @@ def _asset_from_row(row: sqlite3.Row) -> AssetRecord:
         asset_id=str(row["asset_id"]),
         sha256=str(row["sha256"]),
         relative_path=str(row["relative_path"]),
+        display_relative_path=None
+        if row["display_relative_path"] is None
+        else str(row["display_relative_path"]),
         size_bytes=int(row["size_bytes"]),
         quality=MediaQuality(str(row["quality"])),
         media_unit_id=str(row["media_unit_id"]),

@@ -35,6 +35,7 @@ from material_collector.core.errors import (
     ContractError,
     SessionNotFoundError,
     SessionStateError,
+    SessionVersionError,
     WorkspaceError,
 )
 
@@ -1021,31 +1022,17 @@ def _ensure_runtime_schema(connection: sqlite3.Connection, session_id: str) -> N
     base = connection.execute(
         "SELECT schema_version FROM schema_info WHERE singleton = 1"
     ).fetchone()
-    if base is not None and int(base["schema_version"]) == 1:
-        columns = {
-            str(row["name"])
-            for row in connection.execute("PRAGMA table_info(session_state)").fetchall()
-        }
-        if "request_timeout_seconds" not in columns:
-            connection.execute(
-                """
-                ALTER TABLE session_state
-                ADD COLUMN request_timeout_seconds INTEGER NOT NULL DEFAULT 30
-                    CHECK (request_timeout_seconds >= 1)
-                """
-            )
-        connection.execute(
-            "UPDATE schema_info SET schema_version = ? WHERE singleton = 1",
-            (SESSION_SCHEMA_VERSION,),
-        )
-        connection.execute(f"PRAGMA user_version = {SESSION_SCHEMA_VERSION}")
-        base = connection.execute(
-            "SELECT schema_version FROM schema_info WHERE singleton = 1"
-        ).fetchone()
-    if base is None or int(base["schema_version"]) != SESSION_SCHEMA_VERSION:
+    if base is None:
         raise SessionStateError(
             "The session database schema is unsupported.",
             details={"session_id": session_id},
+        )
+    schema_version = int(base["schema_version"])
+    if schema_version != SESSION_SCHEMA_VERSION:
+        raise SessionVersionError(
+            session_id,
+            schema_version,
+            SESSION_SCHEMA_VERSION,
         )
     statements = (
         """

@@ -15,6 +15,7 @@ import typer
 from pydantic import BaseModel, ValidationError
 from typer._click.exceptions import Abort, ClickException
 
+from material_collector import __version__
 from material_collector.application.media_actions import MediaApplication
 from material_collector.application.session_runtime import SessionControlApplication
 from material_collector.application.sessions import (
@@ -24,18 +25,24 @@ from material_collector.application.sessions import (
 )
 from material_collector.application.source_manifest import SourceManifestApplication
 from material_collector.application.workflow import CollectionWorkflow, WorkflowResult
-from material_collector.core.contracts import normalize_contracts
+from material_collector.core.contracts import contract_schema_bundle, normalize_contracts
 from material_collector.core.errors import (
     CollectorError,
     ContractError,
+    ContractVersionError,
     SessionNotFoundError,
     SessionStateError,
     WorkspaceError,
 )
-from material_collector.core.media import Platform
+from material_collector.core.media import BrowserChannel, Platform
 from material_collector.infrastructure.assets import WorkspaceAssetStoreFactory
 from material_collector.infrastructure.authentication import (
     PlaywrightAuthenticationGateway,
+)
+from material_collector.infrastructure.executor import (
+    CollectionExecutor,
+    ExecutorFailure,
+    ExecutorInvocation,
 )
 from material_collector.infrastructure.media_inspection import (
     LocalMediaFingerprintService,
@@ -70,11 +77,15 @@ review_app = typer.Typer(help="Inspect and decide long-video review items.")
 result_app = typer.Typer(help="Export the authoritative collection result.")
 media_app = typer.Typer(help="Fetch media assets on demand.")
 contracts_app = typer.Typer(help="Validate and normalize versioned input contracts.")
+executor_app = typer.Typer(
+    help="Start and control collector-owned background executions."
+)
 app.add_typer(auth_app, name="auth")
 app.add_typer(review_app, name="review")
 app.add_typer(result_app, name="result")
 app.add_typer(media_app, name="media")
 app.add_typer(contracts_app, name="contracts")
+app.add_typer(executor_app, name="executor")
 
 
 class ProgressFormat(StrEnum):
@@ -133,8 +144,10 @@ def _human_progress_value(value: object) -> str:
     )
 
 
-def _platform_adapters() -> dict[Platform, Any]:
-    transport = PlaywrightPlatformTransport()
+def _platform_adapters(
+    transport: PlaywrightPlatformTransport | None = None,
+) -> dict[Platform, Any]:
+    transport = transport or PlaywrightPlatformTransport()
     adapters = (
         BilibiliAdapter(transport),
         DouyinAdapter(transport),
@@ -144,7 +157,8 @@ def _platform_adapters() -> dict[Platform, Any]:
 
 
 def _workflow(*, progress: _CliProgressReporter) -> CollectionWorkflow:
-    adapters = _platform_adapters()
+    transport = PlaywrightPlatformTransport()
+    adapters = _platform_adapters(transport)
     return CollectionWorkflow(
         authentication=_authentication(),
         search_providers=adapters,
@@ -155,6 +169,7 @@ def _workflow(*, progress: _CliProgressReporter) -> CollectionWorkflow:
         manifest=_manifest_application(),
         asset_stores=WorkspaceAssetStoreFactory(),
         fingerprints=LocalMediaFingerprintService(),
+        search_browser_sessions=transport,
         progress=progress,
     )
 
@@ -173,7 +188,7 @@ def _json_text(value: BaseModel | dict[str, Any]) -> str:
     )
     return json.dumps(
         payload,
-        ensure_ascii=False,
+        ensure_ascii=True,
         sort_keys=True,
         separators=(",", ":"),
     )
@@ -188,7 +203,10 @@ def _emit_diagnostic(event: dict[str, Any]) -> None:
 
 
 def _exit_code_for(error: CollectorError) -> int:
-    if isinstance(error, (ContractError, SessionNotFoundError, WorkspaceError)):
+    if isinstance(
+        error,
+        (ContractError, ContractVersionError, SessionNotFoundError, WorkspaceError),
+    ):
         return 40
     if error.details.get("retryable") is True:
         return 30
@@ -196,6 +214,8 @@ def _exit_code_for(error: CollectorError) -> int:
         "auth_profile_busy",
         "auth_desktop_unavailable",
         "auth_login_timeout",
+        "browser_channel_exhausted",
+        "browser_channel_failed",
         "platform_timeout",
         "platform_navigation_timeout",
         "platform_response_timeout",
@@ -315,6 +335,97 @@ def _read_json_contract(path: Path, document: str) -> Any:
         ) from error
 
 
+@executor_app.command("invoke")
+def executor_invoke_command(
+    operation: Annotated[
+        str | None,
+        typer.Option("--operation", help="run, resume, status, or cancel."),
+    ] = None,
+    collector_path: Annotated[
+        str | None,
+        typer.Option(
+            "--collector-path",
+            help="Collector executable; defaults to this Python environment.",
+        ),
+    ] = None,
+    workspace: Annotated[
+        str | None,
+        typer.Option("--workspace", help="Persistent material workspace."),
+    ] = None,
+    input_path: Annotated[
+        str | None,
+        typer.Option("--input", help="Collection input JSON for run."),
+    ] = None,
+    query_plans_path: Annotated[
+        str | None,
+        typer.Option("--query-plans", help="QueryPlan JSON for run."),
+    ] = None,
+    session_id: Annotated[
+        str | None,
+        typer.Option("--session-id", help="Existing session for resume/status/cancel."),
+    ] = None,
+    request_timeout_seconds: Annotated[
+        str,
+        typer.Option("--request-timeout-seconds"),
+    ] = "30",
+    max_rounds: Annotated[str, typer.Option("--max-rounds")] = "3",
+    max_videos: Annotated[str, typer.Option("--max-videos")] = "18",
+    browser_channel: Annotated[
+        str,
+        typer.Option("--browser-channel", help="auto, edge, or chrome for a new run."),
+    ] = "auto",
+    show_search_browsers: Annotated[
+        bool,
+        typer.Option(
+            "--show-search-browsers",
+            help="Show platform search windows for this run or resume only.",
+        ),
+    ] = False,
+    progress_format: Annotated[str, typer.Option("--progress-format")] = "jsonl",
+    control_directory: Annotated[
+        str | None,
+        typer.Option("--control-directory", help="Override executor artifact directory."),
+    ] = None,
+) -> None:
+    """Invoke the cross-platform executor through its stable Agent contract."""
+
+    invocation = ExecutorInvocation(
+        operation=operation,
+        collector_path=collector_path,
+        workspace=workspace,
+        input_path=input_path,
+        query_plans_path=query_plans_path,
+        session_id=session_id,
+        request_timeout_seconds=request_timeout_seconds,
+        max_rounds=max_rounds,
+        max_videos=max_videos,
+        browser_channel=browser_channel,
+        show_search_browsers=show_search_browsers,
+        progress_format=progress_format,
+        control_directory=control_directory,
+    )
+    try:
+        result = CollectionExecutor().invoke(invocation)
+    except ExecutorFailure as error:
+        _emit_final(error.payload())
+        raise typer.Exit(error.exit_code) from error
+    except Exception as error:  # pragma: no cover - last-resort executor containment
+        _emit_final(
+            {
+                "schema_version": "1.0",
+                "status": "error",
+                "error": {
+                    "code": "internal_error",
+                    "message": "An unexpected executor error occurred.",
+                },
+            }
+        )
+        raise typer.Exit(50) from error
+    _emit_final(result.payload)
+    if result.exit_code:
+        raise typer.Exit(result.exit_code)
+
+
 @contracts_app.command("normalize")
 def normalize_contracts_command(
     input_path: Annotated[
@@ -362,6 +473,34 @@ def normalize_contracts_command(
     _execute(operation)
 
 
+@contracts_app.command("schema")
+def contract_schema_command() -> None:
+    """Return the read-only authoring schemas used by the runtime models."""
+
+    _execute(
+        lambda: {
+            "schema_version": "material-collector-contract-schemas/v1",
+            "status": "available",
+            "contracts": contract_schema_bundle(),
+        }
+    )
+
+
+@app.command("version")
+def version_command() -> None:
+    """Return CLI and Agent-contract compatibility without changing state."""
+
+    _emit_final(
+        {
+            "schema_version": "material-collector-version/v1",
+            "cli_version": __version__,
+            "skill_protocol_version": 1,
+            "collection_input_schema": {"min": "1.0", "max": "1.0"},
+            "query_plans_schema": {"min": "2.0", "max": "2.0"},
+        }
+    )
+
+
 @app.command("run")
 def run_command(
     workspace: Annotated[
@@ -390,7 +529,7 @@ def run_command(
             file_okay=True,
             dir_okay=False,
             readable=True,
-            help="UTF-8 JSON QueryPlan document using schema version 1.0.",
+            help="UTF-8 JSON QueryPlan document using schema version 2.0.",
         ),
     ],
     max_rounds: Annotated[
@@ -412,6 +551,14 @@ def run_command(
             help="Local authentication profile identifier.",
         ),
     ] = "default",
+    browser_channel: Annotated[
+        BrowserChannel,
+        typer.Option(
+            "--browser-channel",
+            case_sensitive=False,
+            help="Native browser channel: auto prefers Edge, then Chrome.",
+        ),
+    ] = BrowserChannel.AUTO,
     auth_wait_seconds: Annotated[
         int,
         typer.Option(
@@ -436,6 +583,13 @@ def run_command(
             help="Progress format written to stderr.",
         ),
     ] = ProgressFormat.JSONL,
+    show_search_browsers: Annotated[
+        bool,
+        typer.Option(
+            "--show-search-browsers",
+            help="Show one identifiable search window per in-scope platform.",
+        ),
+    ] = False,
 ) -> None:
     """Create a session and run collection to its next durable checkpoint."""
 
@@ -444,6 +598,7 @@ def run_command(
             max_rounds=max_rounds,
             max_videos=max_videos,
             auth_profile=auth_profile,
+            browser_channel=browser_channel,
             auth_wait_seconds=auth_wait_seconds,
             request_timeout_seconds=request_timeout_seconds,
         )
@@ -456,7 +611,11 @@ def run_command(
         session = _application().create_session(request)
         return await _workflow(
             progress=_CliProgressReporter(progress_format)
-        ).run(workspace, session.session_id)
+        ).run(
+            workspace,
+            session.session_id,
+            show_search_browsers=show_search_browsers,
+        )
 
     _execute_async(operation, exit_code=_workflow_exit_code)
 
@@ -479,13 +638,24 @@ def resume_command(
             help="Progress format written to stderr.",
         ),
     ] = ProgressFormat.JSONL,
+    show_search_browsers: Annotated[
+        bool,
+        typer.Option(
+            "--show-search-browsers",
+            help="Show search windows for this resume execution only.",
+        ),
+    ] = False,
 ) -> None:
     """Resume from the first uncommitted stage."""
 
     _execute_async(
         lambda: _workflow(
             progress=_CliProgressReporter(progress_format)
-        ).run(workspace, session_id),
+        ).run(
+            workspace,
+            session_id,
+            show_search_browsers=show_search_browsers,
+        ),
         exit_code=_workflow_exit_code,
     )
 
@@ -550,10 +720,16 @@ def auth_status_command(
         str,
         typer.Option("--auth-profile", help="Local authentication profile."),
     ] = "default",
+    browser_channel: Annotated[
+        BrowserChannel,
+        typer.Option("--browser-channel", case_sensitive=False),
+    ] = BrowserChannel.CHROME,
 ) -> None:
     """Probe one platform without opening an interactive login."""
 
-    _execute_async(lambda: _authentication().probe(platform, auth_profile))
+    _execute_async(
+        lambda: _authentication().probe(platform, auth_profile, browser_channel)
+    )
 
 
 @auth_app.command("login")
@@ -567,20 +743,29 @@ def auth_login_command(
         int,
         typer.Option("--auth-wait-seconds", min=1),
     ] = 600,
+    browser_channel: Annotated[
+        BrowserChannel,
+        typer.Option("--browser-channel", case_sensitive=False),
+    ] = BrowserChannel.AUTO,
 ) -> None:
     """Ensure one platform is authenticated, opening a browser when needed."""
 
     async def operation() -> dict[str, Any]:
-        probes = await _authentication().ensure_authenticated(
+        selection = await _authentication().ensure_authenticated(
             (platform,),
             auth_profile,
             auth_wait_seconds,
+            browser_channel=browser_channel,
         )
         return {
             "schema_version": "1.0",
             "status": "authenticated",
             "auth_profile": auth_profile,
-            "platforms": [probe.model_dump(mode="json", exclude_none=False) for probe in probes],
+            "browser_channel": selection.browser_channel.value,
+            "platforms": [
+                probe.model_dump(mode="json", exclude_none=False)
+                for probe in selection.probes
+            ],
             "action_required": None,
         }
 
@@ -595,16 +780,26 @@ def auth_logout_command(
     ],
     confirm: Annotated[str, typer.Option("--confirm")],
     auth_profile: Annotated[str, typer.Option("--auth-profile")] = "default",
+    browser_channel: Annotated[
+        BrowserChannel,
+        typer.Option("--browser-channel", case_sensitive=False),
+    ] = BrowserChannel.CHROME,
 ) -> None:
     """Delete one platform profile after explicit platform confirmation."""
 
     async def operation() -> dict[str, Any]:
-        await _authentication().logout(platform, auth_profile, confirm)
+        await _authentication().logout(
+            platform,
+            auth_profile,
+            confirm,
+            browser_channel,
+        )
         return {
             "schema_version": "1.0",
             "status": "logged_out",
             "auth_profile": auth_profile,
             "platform": platform.value,
+            "browser_channel": browser_channel.value,
             "action_required": None,
         }
 
@@ -696,16 +891,22 @@ def media_fetch_high_quality_command(
             session_id,
             media_unit_id,
         )
+        if session.selected_browser_channel is None:
+            raise SessionStateError(
+                "The session has not frozen a successful browser channel."
+            )
         await _authentication().ensure_authenticated(
             (platform,),
             session.constraints.auth_profile,
             session.constraints.auth_wait_seconds,
+            browser_channel=session.selected_browser_channel,
         )
         return await application.fetch_high_quality(
             workspace,
             session_id,
             media_unit_id,
             auth_profile=session.constraints.auth_profile,
+            browser_channel=session.selected_browser_channel,
             request_timeout_seconds=session.constraints.request_timeout_seconds,
         )
 

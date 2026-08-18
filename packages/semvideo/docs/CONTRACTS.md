@@ -801,6 +801,19 @@ semvideo config set-media-tools
 应用接口验证两个路径均为文件，再原子更新 `[media]` 并返回生效值。
 更新媒体工具路径时必须保留已有分析代理策略字段。
 
+受支持的模型提供商必须通过公开配置档命令选择：
+
+```text
+semvideo config set-llm-provider agnes
+  [--workspace <path>]
+  [--json]
+```
+
+该命令原子更新 `[llm]` 与 `[concurrency]`，返回提供商、端点、模型、凭据环境
+变量名、总上下文、输入/输出预算和并发上限。Agnes 配置档固定
+`agnes-2.5-flash`、`524288` 总上下文、默认 `8192` 输出保留、`516096`
+输入预算和最多 `2` 个同时在途请求。`config.toml` 不保存凭据值。
+
 `analysis_proxy_max_width` 与 `analysis_proxy_max_height` 是旋转后显示尺寸的包围盒。
 任一显示尺寸超限时生成保持宽高比、不放大、视频轨独占的分析代理；两项均未超限
 时直接使用源视频。视觉候选切分、证据帧和镜头语言阶段读取代理，字幕、ASR、
@@ -930,6 +943,7 @@ sidecar，或改写检索记录、checkpoint、manifest 和检查报告。
 
 ```text
 semvideo config show [--workspace <path>] [--json]
+semvideo config set-llm-provider <provider> [--workspace <path>] [--json]
 semvideo profile list [--workspace <path>] [--json]
 semvideo profile validate <name> [--workspace <path>] [--json]
 ```
@@ -957,7 +971,7 @@ V1 的模型凭据不属于上述配置值：
 - 新处理尝试缺少凭据时，在启动昂贵阶段前以配置错误失败，不修改已经验证的检查点。
 - Agent Skill 只能检查 CLI 返回的布尔诊断结果，不得读取、回显或保存凭据。
 - V1 不实现 `.env` 自动加载、凭据数据库或 Windows Credential Manager。
-- V1 不配置单任务 token 或货币硬预算。模型请求数和输入规模由视频时长、证据窗口及模型上下文能力决定，与调用 Semvideo 的主 Agent token 预算无关。
+- V1 不配置单任务 token 或货币硬预算。模型请求数和输入规模由视频时长、证据窗口及模型上下文能力决定，与调用 Semvideo 的主 Agent token 预算无关。Agnes 的 512K 是一次请求的输入与输出总和，不是纯输入额度。
 - 单次请求可以设置技术性输入/输出上限，防止超过模型上下文或生成无界响应；这不是单任务费用预算。
 - 每次模型运行仍记录实际输入/输出 token、请求次数和可获得的费用信息，仅用于观察、评测和人工调优。
 

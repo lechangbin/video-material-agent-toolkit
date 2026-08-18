@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from material_collector.application.sessions import (
     COLLECTION_INPUT_SNAPSHOT,
@@ -46,8 +46,10 @@ from material_collector.core.errors import (
     ContractError,
     SessionNotFoundError,
     SessionStateError,
+    SessionVersionError,
     WorkspaceError,
 )
+from material_collector.core.media import BrowserChannel
 
 _SESSION_ID = re.compile(r"^ses_[A-Za-z0-9_-]{1,80}$")
 
@@ -153,6 +155,63 @@ class SqliteSessionStore:
             QueryPlans.model_validate_json(plans_bytes),
         )
 
+    def freeze_browser_channel(
+        self,
+        workspace: Path,
+        session_id: str,
+        channel: BrowserChannel,
+    ) -> SessionView:
+        """Persist the first successful native browser and reject later switches."""
+
+        if channel is BrowserChannel.AUTO:
+            raise SessionStateError("The automatic browser channel cannot be frozen.")
+        _validate_session_id(session_id)
+        normalized_workspace = _normalize_workspace(workspace, create=False)
+        database_path = _session_directory(normalized_workspace, session_id) / SESSION_DATABASE
+        if not database_path.is_file():
+            raise SessionNotFoundError(session_id)
+        try:
+            with closing(sqlite3.connect(database_path, timeout=5.0)) as connection:
+                connection.row_factory = sqlite3.Row
+                connection.execute("PRAGMA busy_timeout = 5000")
+                _verify_database(connection, session_id)
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute(
+                    "SELECT selected_browser_channel FROM session_state WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+                if row is None:
+                    raise SessionStateError(
+                        "The session database does not contain its expected session row.",
+                        details={"session_id": session_id},
+                    )
+                selected = row["selected_browser_channel"]
+                if selected is not None and selected != channel.value:
+                    raise SessionStateError(
+                        "The session browser channel is already frozen.",
+                        details={
+                            "session_id": session_id,
+                            "selected_browser_channel": selected,
+                        },
+                    )
+                if selected is None:
+                    connection.execute(
+                        """
+                        UPDATE session_state
+                        SET selected_browser_channel = ?, state_version = state_version + 1,
+                            updated_at = ?
+                        WHERE session_id = ?
+                        """,
+                        (channel.value, _iso_utc(self._now()), session_id),
+                    )
+                connection.commit()
+        except sqlite3.Error as error:
+            raise SessionStateError(
+                "The session browser channel could not be frozen.",
+                details={"session_id": session_id},
+            ) from error
+        return self.get_session(normalized_workspace, session_id)
+
     def get_session(self, workspace: Path, session_id: str) -> SessionView:
         """Read one session without mutating its business state."""
 
@@ -165,14 +224,9 @@ class SqliteSessionStore:
 
         try:
             with closing(_connect_read_only(database_path)) as connection:
-                schema_version = _verify_database(connection, session_id)
-                request_timeout_projection = (
-                    "request_timeout_seconds"
-                    if schema_version >= 2
-                    else "30 AS request_timeout_seconds"
-                )
+                _verify_database(connection, session_id)
                 row = connection.execute(
-                    f"""
+                    """
                     SELECT
                         session_id,
                         status,
@@ -187,7 +241,9 @@ class SqliteSessionStore:
                         max_videos,
                         auth_profile,
                         auth_wait_seconds,
-                        {request_timeout_projection}
+                        request_timeout_seconds,
+                        browser_channel,
+                        selected_browser_channel
                     FROM session_state
                     WHERE session_id = ?
                     """,
@@ -220,6 +276,26 @@ class SqliteSessionStore:
             ) from error
 
         result_file = session_dir / COLLECTION_RESULT
+        plans_path = normalized_workspace / Path(str(row["query_plans_snapshot_path"]))
+        try:
+            plans_bytes = plans_path.read_bytes()
+        except OSError as error:
+            raise SessionStateError(
+                "The frozen QueryPlan file could not be read.",
+                details={"session_id": session_id},
+            ) from error
+        if hashlib.sha256(plans_bytes).hexdigest() != str(row["query_plans_sha256"]):
+            raise SessionStateError(
+                "The frozen QueryPlan file failed hash validation.",
+                details={"session_id": session_id},
+            )
+        try:
+            platform_scope = QueryPlans.model_validate_json(plans_bytes).platform_scope
+        except ValidationError as error:
+            raise SessionStateError(
+                "The frozen QueryPlan contract is unsupported.",
+                details={"session_id": session_id},
+            ) from error
         return SessionView(
             session_id=str(row["session_id"]),
             workspace_path=str(normalized_workspace),
@@ -231,12 +307,19 @@ class SqliteSessionStore:
             input_sha256=str(row["input_sha256"]),
             query_plans_snapshot_path=str(row["query_plans_snapshot_path"]),
             query_plans_sha256=str(row["query_plans_sha256"]),
+            platform_scope=platform_scope,
             constraints=RuntimeConstraints(
                 max_rounds=int(row["max_rounds"]),
                 max_videos=int(row["max_videos"]),
                 auth_profile=str(row["auth_profile"]),
                 auth_wait_seconds=int(row["auth_wait_seconds"]),
                 request_timeout_seconds=int(row["request_timeout_seconds"]),
+                browser_channel=BrowserChannel(str(row["browser_channel"])),
+            ),
+            selected_browser_channel=(
+                BrowserChannel(str(row["selected_browser_channel"]))
+                if row["selected_browser_channel"] is not None
+                else None
             ),
             segments=tuple(
                 SessionSegmentView(
@@ -490,7 +573,11 @@ def _initialize_database(
                     auth_profile TEXT NOT NULL,
                     auth_wait_seconds INTEGER NOT NULL CHECK (auth_wait_seconds >= 1),
                     request_timeout_seconds INTEGER NOT NULL
-                        CHECK (request_timeout_seconds >= 1)
+                        CHECK (request_timeout_seconds >= 1),
+                    browser_channel TEXT NOT NULL
+                        CHECK (browser_channel IN ('auto', 'edge', 'chrome')),
+                    selected_browser_channel TEXT
+                        CHECK (selected_browser_channel IN ('edge', 'chrome'))
                 );
 
                 CREATE TABLE segment_state (
@@ -592,8 +679,10 @@ def _initialize_database(
                     max_videos,
                     auth_profile,
                     auth_wait_seconds,
-                    request_timeout_seconds
-                ) VALUES (?, 'initialized', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    request_timeout_seconds,
+                    browser_channel,
+                    selected_browser_channel
+                ) VALUES (?, 'initialized', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
                 """,
                 (
                     session_id,
@@ -608,6 +697,7 @@ def _initialize_database(
                     constraints.auth_profile,
                     constraints.auth_wait_seconds,
                     constraints.request_timeout_seconds,
+                    constraints.browser_channel.value,
                 ),
             )
             plan_ids = {
@@ -703,9 +793,10 @@ def _verify_database(connection: sqlite3.Connection, session_id: str) -> int:
         )
     schema_version = int(schema_row["schema_version"])
     if schema_version not in SUPPORTED_SESSION_SCHEMA_VERSIONS:
-        raise SessionStateError(
-            "The session database schema is unsupported.",
-            details={"session_id": session_id, "schema_version": schema_version},
+        raise SessionVersionError(
+            session_id,
+            schema_version,
+            *sorted(SUPPORTED_SESSION_SCHEMA_VERSIONS),
         )
     return schema_version
 

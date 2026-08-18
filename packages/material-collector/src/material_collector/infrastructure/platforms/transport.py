@@ -9,8 +9,9 @@ import re
 import socket
 from collections.abc import AsyncIterator, Iterable, Mapping
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, cast
 from urllib.parse import urljoin
 
 import httpcore
@@ -18,7 +19,7 @@ import httpx
 from playwright.async_api import BrowserContext, async_playwright
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
-from material_collector.core.media import Platform, PlatformContext
+from material_collector.core.media import BrowserChannel, Platform, PlatformContext
 from material_collector.infrastructure.platforms._shared import (
     validate_temporary_media_url,
 )
@@ -30,6 +31,10 @@ from material_collector.infrastructure.platforms.rendered_access import (
 
 _PROFILE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
 _DIRECT_CHROMIUM_ARGS = ("--no-proxy-server",)
+_PLAYWRIGHT_CHANNEL = {
+    BrowserChannel.EDGE: "msedge",
+    BrowserChannel.CHROME: "chrome",
+}
 _CAPTURE_WARMUP_URLS: Mapping[Platform, str] = {
     Platform.XIAOHONGSHU: "https://www.xiaohongshu.com/explore",
 }
@@ -46,6 +51,14 @@ _SHORT_CHAIN_SUFFIXES: Mapping[Platform, tuple[str, ...]] = {
     Platform.XIAOHONGSHU: ("xhslink.com", "xiaohongshu.com"),
 }
 _CaptureTimeoutPhase = Literal["warmup", "navigation", "response"]
+_SearchContextKey = tuple[str, BrowserChannel, Platform, bool]
+
+
+@dataclass(slots=True)
+class _SharedSearchContext:
+    manager: Any
+    browser: BrowserContext
+    closed_by_user: bool = False
 
 
 class HostResolver(Protocol):
@@ -170,6 +183,9 @@ class PlaywrightPlatformTransport:
         self._resolver = resolver or _system_resolver
         self._http_transport = http_transport
         self._network_backend = network_backend or httpcore.AnyIOBackend()
+        self._search_contexts: dict[_SearchContextKey, _SharedSearchContext] = {}
+        self._search_locks: dict[_SearchContextKey, asyncio.Lock] = {}
+        self._active_search_keys: set[_SearchContextKey] = set()
 
     def _operation_transport(
         self,
@@ -179,7 +195,12 @@ class PlaywrightPlatformTransport:
         backend = _PinnedNetworkBackend(self._network_backend)
         return _PinnedAsyncHTTPTransport(backend), backend
 
-    def _profile_path(self, auth_profile: str, platform: Platform) -> Path:
+    def _profile_path(
+        self,
+        auth_profile: str,
+        browser_channel: BrowserChannel,
+        platform: Platform,
+    ) -> Path:
         if _PROFILE_ID.fullmatch(auth_profile) is None:
             raise PlatformAdapterError(
                 "auth_profile_invalid",
@@ -200,21 +221,27 @@ class PlaywrightPlatformTransport:
                     retryable=False,
                 )
             auth_root = Path(local_app_data) / "material-collector" / "auth"
-        return auth_root / auth_profile / platform.value
+        return auth_root / auth_profile / browser_channel.value / platform.value
 
     @asynccontextmanager
     async def _open_context(
         self,
         platform: Platform,
         context: PlatformContext,
+        *,
+        visible: bool = False,
     ) -> AsyncIterator[BrowserContext]:
-        profile_path = self._profile_path(context.auth_profile, platform)
+        profile_path = self._profile_path(
+            context.auth_profile,
+            context.browser_channel,
+            platform,
+        )
         profile_path.mkdir(parents=True, exist_ok=True)
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch_persistent_context(
                 user_data_dir=profile_path,
-                channel="chrome",
-                headless=self._headless,
+                channel=_PLAYWRIGHT_CHANNEL[context.browser_channel],
+                headless=self._headless and not visible,
                 chromium_sandbox=True,
                 args=list(_DIRECT_CHROMIUM_ARGS),
             )
@@ -222,6 +249,79 @@ class PlaywrightPlatformTransport:
                 yield browser
             finally:
                 await browser.close()
+
+    @asynccontextmanager
+    async def search_execution(
+        self,
+        platforms: tuple[Platform, ...],
+        context: PlatformContext,
+    ) -> AsyncIterator[None]:
+        keys = (
+            {
+                self._search_context_key(platform, context)
+                for platform in platforms
+            }
+            if context.show_search_browser
+            else set()
+        )
+        self._active_search_keys.update(keys)
+        try:
+            yield
+        finally:
+            for platform in platforms:
+                await self.reset_search_platform(platform, context)
+            self._active_search_keys.difference_update(keys)
+
+    async def reset_search_platform(
+        self,
+        platform: Platform,
+        context: PlatformContext,
+    ) -> None:
+        key = self._search_context_key(platform, context)
+        lock = self._search_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            shared = self._search_contexts.pop(key, None)
+            if shared is not None:
+                await shared.manager.__aexit__(None, None, None)
+
+    def _search_context_key(
+        self,
+        platform: Platform,
+        context: PlatformContext,
+    ) -> _SearchContextKey:
+        return (
+            context.auth_profile,
+            context.browser_channel,
+            platform,
+            context.show_search_browser,
+        )
+
+    @asynccontextmanager
+    async def _open_search_context(
+        self,
+        platform: Platform,
+        context: PlatformContext,
+    ) -> AsyncIterator[_SharedSearchContext]:
+        key = self._search_context_key(platform, context)
+        lock = self._search_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            shared = self._search_contexts.get(key)
+            if shared is None:
+                manager = (
+                    self._open_context(platform, context, visible=True)
+                    if context.show_search_browser
+                    else self._open_context(platform, context)
+                )
+                browser = await manager.__aenter__()
+                shared = _SharedSearchContext(manager=manager, browser=browser)
+                on_event = getattr(browser, "on", None)
+                if callable(on_event):
+                    on_event(
+                        "close",
+                        lambda *_args: setattr(shared, "closed_by_user", True),
+                    )
+                self._search_contexts[key] = shared
+        yield shared
 
     async def capture_json(
         self,
@@ -234,9 +334,49 @@ class PlaywrightPlatformTransport:
     ) -> Mapping[str, Any]:
         timeout_ms = context.request_timeout_seconds * 1000
         timeout_phase: _CaptureTimeoutPhase = "navigation"
+        page: Any | None = None
+        shared_search_context: _SharedSearchContext | None = None
+        search_browser_closed = False
+        visible = operation == "search" and context.show_search_browser
         try:
-            async with self._open_context(platform, context) as browser:
+            search_key = self._search_context_key(platform, context)
+            browser_context: Any
+            if operation == "search" and search_key in self._active_search_keys:
+                browser_context = self._open_search_context(
+                    platform,
+                    context,
+                )
+            else:
+                browser_context = (
+                    self._open_context(platform, context, visible=True)
+                    if visible
+                    else self._open_context(platform, context)
+                )
+            async with browser_context as opened_context:
+                if operation == "search" and search_key in self._active_search_keys:
+                    shared_search_context = cast(_SharedSearchContext, opened_context)
+                    if shared_search_context.closed_by_user:
+                        raise PlatformAdapterError(
+                            "search_browser_closed",
+                            "The visible search browser was closed.",
+                            platform=platform,
+                            operation=operation,
+                            retryable=True,
+                        )
+                    browser = shared_search_context.browser
+                else:
+                    browser = opened_context
                 page = await browser.new_page()
+                if visible:
+                    await _identify_visible_search_page(page, platform)
+
+                    def mark_search_browser_closed(_page: Any) -> None:
+                        nonlocal search_browser_closed
+                        search_browser_closed = True
+                        if shared_search_context is not None:
+                            shared_search_context.closed_by_user = True
+
+                    page.on("close", mark_search_browser_closed)
                 try:
                     warmup_url = _CAPTURE_WARMUP_URLS.get(platform)
                     if warmup_url is not None:
@@ -295,6 +435,26 @@ class PlaywrightPlatformTransport:
                 retryable=True,
             ) from exc
         except Exception as exc:
+            if visible and page is not None and (
+                search_browser_closed or page.is_closed()
+            ):
+                raise PlatformAdapterError(
+                    "search_browser_closed",
+                    "The visible search browser was closed.",
+                    platform=platform,
+                    operation=operation,
+                    retryable=True,
+                ) from exc
+            if visible and shared_search_context is not None and (
+                shared_search_context.closed_by_user
+            ):
+                raise PlatformAdapterError(
+                    "search_browser_closed",
+                    "The visible search browser was closed.",
+                    platform=platform,
+                    operation=operation,
+                    retryable=True,
+                ) from exc
             raise PlatformAdapterError(
                 "platform_transport_failed",
                 "The authenticated browser operation failed.",
@@ -313,7 +473,6 @@ class PlaywrightPlatformTransport:
                 details={"field": "$"},
             )
         return payload
-
     async def resolve_url(
         self,
         url: str,
@@ -446,6 +605,26 @@ class PlaywrightPlatformTransport:
                 retryable=True,
                 details={"exception_type": type(exc).__name__},
             ) from exc
+
+
+async def _identify_visible_search_page(page: Any, platform: Platform) -> None:
+    label = f"Material Collector · {platform.value} · "
+    await page.add_init_script(
+        f"""
+        (() => {{
+          const label = {label!r};
+          window.name = `material-collector-search-{platform.value}`;
+          window.addEventListener('DOMContentLoaded', () => {{
+            const update = () => {{
+              if (!document.title.startsWith(label)) document.title = label + document.title;
+            }};
+            update();
+            const title = document.querySelector('title');
+            if (title) new MutationObserver(update).observe(title, {{childList: true}});
+          }});
+        }})();
+        """
+    )
 
 
 async def _capture_timeout_error(

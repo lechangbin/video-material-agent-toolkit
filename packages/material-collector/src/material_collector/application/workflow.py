@@ -23,6 +23,7 @@ from material_collector.application.ports import (
     MediaFetcher,
     MediaFingerprintService,
     ProgressReporter,
+    SearchBrowserSessions,
     SearchProvider,
     SourceResolver,
 )
@@ -40,6 +41,7 @@ from material_collector.application.source_manifest import (
     MAX_AUTOMATIC_DURATION_SECONDS,
     SourceManifestApplication,
 )
+from material_collector.application.title_views import publish_and_record_title_view
 from material_collector.core.contracts import QueryPlans
 from material_collector.core.errors import CollectorError, SessionStateError
 from material_collector.core.fingerprints import FingerprintMatch
@@ -58,6 +60,7 @@ from material_collector.core.media import (
     Platform,
     PlatformContext,
     SearchRequest,
+    TitleViewPublication,
 )
 
 WORKFLOW_STAGES: tuple[str, ...] = (
@@ -104,6 +107,7 @@ class WorkflowResult(_WorkflowModel):
     schema_version: Literal["1.0"] = "1.0"
     session_id: str
     workspace_path: str
+    platform_scope: tuple[Platform, ...]
     status: str
     result_path: str
     candidates_found: int
@@ -139,6 +143,7 @@ class CollectionWorkflow:
         manifest: SourceManifestApplication,
         asset_stores: AssetStoreFactory,
         fingerprints: MediaFingerprintService,
+        search_browser_sessions: SearchBrowserSessions | None = None,
         progress: ProgressReporter | None = None,
         lease_maintenance_interval_seconds: float = 5.0,
     ) -> None:
@@ -153,13 +158,20 @@ class CollectionWorkflow:
         self._manifest = manifest
         self._asset_stores = asset_stores
         self._fingerprints = fingerprints
+        self._search_browser_sessions = search_browser_sessions
         self._progress = progress
         self._lease_maintenance_interval_seconds = lease_maintenance_interval_seconds
         _require_platform_adapters(self._search_providers, "search provider")
         _require_platform_adapters(self._source_resolvers, "source resolver")
         _require_platform_adapters(self._media_fetchers, "media fetcher")
 
-    async def run(self, workspace: Path, session_id: str) -> WorkflowResult:
+    async def run(
+        self,
+        workspace: Path,
+        session_id: str,
+        *,
+        show_search_browsers: bool = False,
+    ) -> WorkflowResult:
         """Continue one session until external integration or human review is needed."""
 
         session = self._sessions.get_session(workspace, session_id)
@@ -176,10 +188,6 @@ class CollectionWorkflow:
             stages=WORKFLOW_STAGES,
         )
         issues: list[WorkflowIssue] = []
-        context = PlatformContext(
-            auth_profile=session.constraints.auth_profile,
-            request_timeout_seconds=session.constraints.request_timeout_seconds,
-        )
         reauthenticated: set[Platform] = set()
         segment_ids = tuple(plan.segment_id for plan in query_plans.plans)
         lease_released = False
@@ -188,6 +196,18 @@ class CollectionWorkflow:
             lease = await self._run_authentication(
                 lease,
                 session.constraints.auth_wait_seconds,
+                query_plans.platform_scope,
+            )
+            session = self._sessions.get_session(normalized_workspace, session_id)
+            if session.selected_browser_channel is None:
+                raise SessionStateError(
+                    "Authentication completed without freezing a browser channel."
+                )
+            context = PlatformContext(
+                auth_profile=session.constraints.auth_profile,
+                browser_channel=session.selected_browser_channel,
+                request_timeout_seconds=session.constraints.request_timeout_seconds,
+                show_search_browser=show_search_browsers,
             )
             lease, search_issues = await self._run_search(
                 lease,
@@ -305,6 +325,7 @@ class CollectionWorkflow:
         self,
         lease: ExecutionLease,
         wait_seconds: int,
+        platform_scope: tuple[Platform, ...],
     ) -> ExecutionLease:
         if lease.next_stage != "authenticate":
             return lease
@@ -315,17 +336,24 @@ class CollectionWorkflow:
         )
         try:
             self._report("authentication_started", {"session_id": lease.session_id})
-            lease, probes = await self._await_with_lease_maintenance(
+            session = self._sessions.get_session(lease.workspace, lease.session_id)
+            requested_channel = (
+                session.selected_browser_channel or session.constraints.browser_channel
+            )
+            lease, selection = await self._await_with_lease_maintenance(
                 lease,
                 self._authentication.ensure_authenticated(
-                    PLATFORM_ORDER,
-                    self._sessions.get_session(
-                        lease.workspace,
-                        lease.session_id,
-                    ).constraints.auth_profile,
+                    platform_scope,
+                    session.constraints.auth_profile,
                     wait_seconds,
+                    browser_channel=requested_channel,
                     progress=self._progress,
                 ),
+            )
+            self._sessions.freeze_browser_channel(
+                lease.workspace,
+                lease.session_id,
+                selection.browser_channel,
             )
             next_stage = self._runtime.complete_stage(
                 lease,
@@ -333,8 +361,9 @@ class CollectionWorkflow:
                 result={
                     "platforms": [
                         {"platform": probe.platform.value, "status": probe.status.value}
-                        for probe in probes
-                    ]
+                        for probe in selection.probes
+                    ],
+                    "browser_channel": selection.browser_channel.value,
                 },
             )
             return _lease_with_next(lease, next_stage)
@@ -363,6 +392,35 @@ class CollectionWorkflow:
                     f"{lease.session_id}:search:v1",
                 )
             )
+        if self._search_browser_sessions is not None:
+            async with self._search_browser_sessions.search_execution(
+                query_plans.platform_scope,
+                context,
+            ):
+                return await self._run_search_active(
+                    lease,
+                    query_plans,
+                    context,
+                    wait_seconds=wait_seconds,
+                    reauthenticated=reauthenticated,
+                )
+        return await self._run_search_active(
+            lease,
+            query_plans,
+            context,
+            wait_seconds=wait_seconds,
+            reauthenticated=reauthenticated,
+        )
+
+    async def _run_search_active(
+        self,
+        lease: ExecutionLease,
+        query_plans: QueryPlans,
+        context: PlatformContext,
+        *,
+        wait_seconds: int,
+        reauthenticated: set[Platform],
+    ) -> tuple[ExecutionLease, tuple[WorkflowIssue, ...]]:
         attempt = self._runtime.begin_stage(
             lease,
             stage_key="search",
@@ -446,12 +504,18 @@ class CollectionWorkflow:
                 for platform, requests in pending_auth_retries:
                     self._raise_if_cancelled(lease)
                     reauthenticated.add(platform)
+                    if self._search_browser_sessions is not None:
+                        await self._search_browser_sessions.reset_search_platform(
+                            platform,
+                            context,
+                        )
                     lease, _probes = await self._await_with_lease_maintenance(
                         lease,
                         self._authentication.ensure_authenticated(
                             (platform,),
                             context.auth_profile,
                             wait_seconds,
+                            browser_channel=context.browser_channel,
                             progress=self._progress,
                         ),
                     )
@@ -533,6 +597,16 @@ class CollectionWorkflow:
                     fatal_auth.code,
                     fatal_auth.message,
                     details=fatal_auth.details,
+                )
+            closed_browser = next(
+                (issue for issue in issues if issue.code == "search_browser_closed"),
+                None,
+            )
+            if closed_browser is not None:
+                raise CollectorError(
+                    closed_browser.code,
+                    closed_browser.message,
+                    details=closed_browser.details,
                 )
             retryable = [issue for issue in issues if _issue_is_retryable(issue)]
             if retryable and completed_batches == 0:
@@ -649,6 +723,7 @@ class CollectionWorkflow:
                         (platform,),
                         context.auth_profile,
                         wait_seconds,
+                        browser_channel=context.browser_channel,
                         progress=self._progress,
                     ),
                 )
@@ -764,6 +839,7 @@ class CollectionWorkflow:
                 if isinstance(error, CollectorError) and (
                     error.code in _AUTH_ACCESS_ERROR_CODES
                     or error.code.startswith("auth_")
+                    or error.code == "search_browser_closed"
                 ):
                     break
         return completed, tuple(issues)
@@ -1065,11 +1141,12 @@ class CollectionWorkflow:
                     manifest,
                     persist_operations=False,
                 )
-                self._manifest.replace_work_groups(
+                refreshed = self._manifest.replace_work_groups(
                     lease.workspace,
                     lease.session_id,
                     groups,
                 )
+                self._publish_primary_title_views(lease, refreshed)
                 return lease, issues
             return lease, ()
 
@@ -1084,11 +1161,12 @@ class CollectionWorkflow:
                 manifest,
                 persist_operations=True,
             )
-            self._manifest.replace_work_groups(
+            grouped = self._manifest.replace_work_groups(
                 lease.workspace,
                 lease.session_id,
                 groups,
             )
+            self._publish_primary_title_views(lease, grouped)
             next_stage = self._runtime.complete_stage(
                 lease,
                 attempt,
@@ -1103,6 +1181,46 @@ class CollectionWorkflow:
         except (CollectorError, OSError) as error:
             self._runtime.fail_stage(lease, attempt, error=_error_payload(error))
             raise
+
+    def _publish_primary_title_views(
+        self,
+        lease: ExecutionLease,
+        manifest: CollectionResult,
+    ) -> CollectionResult:
+        asset_store = self._asset_stores.for_workspace(lease.workspace)
+        current = manifest
+        for candidate in manifest.candidates:
+            for unit in candidate.media_units:
+                for asset in (unit.proxy_asset, unit.high_quality_asset):
+                    if asset is None:
+                        continue
+                    if unit.source_role == "primary":
+                        published, recorded = publish_and_record_title_view(
+                            manifest=self._manifest,
+                            asset_store=asset_store,
+                            workspace=lease.workspace,
+                            asset=asset,
+                            publication=TitleViewPublication(
+                                session_id=lease.session_id,
+                                platform=candidate.platform,
+                                source_id=candidate.source_id,
+                                source_title=candidate.title,
+                                media_unit_title=unit.title,
+                            ),
+                        )
+                        if recorded is not None:
+                            current = recorded
+                    else:
+                        published = asset.model_copy(
+                            update={"display_relative_path": None}
+                        )
+                    if unit.source_role != "primary" and published != asset:
+                        current = self._manifest.record_asset(
+                            lease.workspace,
+                            lease.session_id,
+                            published,
+                        )
+        return current
 
     async def _build_work_groups(
         self,
@@ -1248,6 +1366,7 @@ class CollectionWorkflow:
                     (platform,),
                     context.auth_profile,
                     wait_seconds,
+                    browser_channel=context.browser_channel,
                     progress=self._progress,
                 ),
             )
@@ -1480,6 +1599,7 @@ def _workflow_result(
     return WorkflowResult(
         session_id=manifest.session_id,
         workspace_path=manifest.workspace_path,
+        platform_scope=manifest.platform_scope,
         status=status or (action.type if action else "completed"),
         result_path=str(result_path),
         candidates_found=len(manifest.candidates),

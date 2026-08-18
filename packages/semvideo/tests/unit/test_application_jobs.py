@@ -4,8 +4,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
-
 from semvideo.application import jobs
+from semvideo.application.execution_config import FrozenExecutionConfig
 from semvideo.application.jobs import (
     cancel_job,
     get_job_admission,
@@ -16,6 +16,7 @@ from semvideo.application.jobs import (
 from semvideo.application.source_store import register_source
 from semvideo.application.task_store import TaskStore
 from semvideo.application.workspace import initialize_workspace
+from semvideo.config import load_workspace_config
 from semvideo.errors import SemvideoError
 from semvideo.infrastructure.process_identity import current_process_identity
 
@@ -87,6 +88,9 @@ def test_idempotent_created_job_cannot_bypass_full_admission(
             "overrides": {},
         },
         idempotency_key="request-existing",
+        **FrozenExecutionConfig.freeze(
+            load_workspace_config(workspace.data)
+        ).as_job_fields(),
     )
     store.create_job(
         job_id="job_other",
@@ -108,9 +112,7 @@ def test_idempotent_created_job_cannot_bypass_full_admission(
         )
 
     assert raised.value.payload.code == "job_admission_capacity_reached"
-    assert raised.value.payload.details["admission"]["active_job_ids"] == [
-        "job_other"
-    ]
+    assert raised.value.payload.details["admission"]["active_job_ids"] == ["job_other"]
 
 
 def test_concurrent_unique_submissions_atomically_respect_capacity(
@@ -161,9 +163,9 @@ def test_concurrent_unique_submissions_atomically_respect_capacity(
     rejected = [row for row in results if isinstance(row, SemvideoError)]
     assert len(accepted) == 2
     assert len(rejected) == 2
-    assert {
-        error.payload.code for error in rejected
-    } == {"job_admission_capacity_reached"}
+    assert {error.payload.code for error in rejected} == {
+        "job_admission_capacity_reached"
+    }
     assert launch_count == 2
     assert len(TaskStore(workspace).list_job_ids()) == 2
     admission = get_job_admission(workspace)

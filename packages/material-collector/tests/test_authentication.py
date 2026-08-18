@@ -13,14 +13,18 @@ from unittest.mock import AsyncMock
 import pytest
 
 from material_collector.core.errors import CollectorError
-from material_collector.core.media import AuthStatus, Platform
+from material_collector.core.media import AuthStatus, BrowserChannel, Platform
 from material_collector.infrastructure.authentication import (
     AuthenticationContractError,
-    AuthenticationDesktopUnavailableError,
     AuthenticationLoginTimeoutError,
     AuthProfileBusyError,
+    BrowserChannelSelectionError,
+    BrowserChannelUnavailableError,
     BrowserDesktopUnavailableError,
+    BrowserLaunchError,
     BrowserLoginTimeoutError,
+    BrowserNavigationError,
+    BrowserWindowVerificationError,
     ChromeProcessSnapshot,
     DriverProbe,
     PlaywrightAuthenticationGateway,
@@ -101,7 +105,13 @@ async def test_probe_preserves_all_four_states_without_credentials(
     reason: str,
 ) -> None:
     driver = FakeDriver()
-    profile_dir = tmp_path / "auth" / "editing" / Platform.BILIBILI.value
+    profile_dir = (
+        tmp_path
+        / "auth"
+        / "editing"
+        / BrowserChannel.CHROME.value
+        / Platform.BILIBILI.value
+    )
     profile_dir.mkdir(parents=True)
     driver.probes[Platform.BILIBILI] = DriverProbe(status, reason)
 
@@ -114,6 +124,7 @@ async def test_probe_preserves_all_four_states_without_credentials(
         "schema_version",
         "platform",
         "auth_profile",
+        "browser_channel",
         "status",
         "checked_at",
         "reason_code",
@@ -136,7 +147,7 @@ async def test_ensure_authenticated_uses_frozen_serial_platform_order(
     tmp_path: Path,
 ) -> None:
     driver = FakeDriver()
-    auth_root = tmp_path / "auth" / "editing"
+    auth_root = tmp_path / "auth" / "editing" / BrowserChannel.CHROME.value
     for platform in Platform:
         (auth_root / platform.value).mkdir(parents=True)
         driver.probes[platform] = DriverProbe(
@@ -155,7 +166,8 @@ async def test_ensure_authenticated_uses_frozen_serial_platform_order(
         321,
     )
 
-    assert [item.platform for item in result] == [
+    assert result.browser_channel is BrowserChannel.CHROME
+    assert [item.platform for item in result.probes] == [
         Platform.BILIBILI,
         Platform.DOUYIN,
         Platform.XIAOHONGSHU,
@@ -168,6 +180,149 @@ async def test_ensure_authenticated_uses_frozen_serial_platform_order(
         ("probe", Platform.XIAOHONGSHU, None),
         ("login", Platform.XIAOHONGSHU, 321),
     ]
+
+
+async def test_auto_tries_edge_then_chrome_and_isolates_channel_profiles(
+    tmp_path: Path,
+) -> None:
+    attempts: list[tuple[BrowserChannel, Path]] = []
+
+    class ChannelDriver(FakeDriver):
+        def __init__(self, channel: BrowserChannel) -> None:
+            super().__init__()
+            self.channel = channel
+
+        async def login(
+            self,
+            platform: Platform,
+            user_data_dir: Path,
+            wait_seconds: int,
+            progress: Callable[[str, dict[str, object]], None] | None = None,
+        ) -> DriverProbe:
+            attempts.append((self.channel, user_data_dir))
+            if self.channel is BrowserChannel.EDGE:
+                raise BrowserChannelUnavailableError
+            return await super().login(
+                platform,
+                user_data_dir,
+                wait_seconds,
+                progress,
+            )
+
+    auth = PlaywrightAuthenticationGateway(
+        root_dir=tmp_path / "auth",
+        driver_factory=ChannelDriver,
+        native_windows=True,
+    )
+
+    result = await auth.ensure_authenticated(
+        (Platform.BILIBILI,),
+        "editing",
+        30,
+        browser_channel=BrowserChannel.AUTO,
+    )
+
+    assert result.browser_channel is BrowserChannel.CHROME
+    assert [channel for channel, _path in attempts] == [
+        BrowserChannel.EDGE,
+        BrowserChannel.CHROME,
+    ]
+    assert [path.relative_to(tmp_path / "auth") for _channel, path in attempts] == [
+        Path("editing/edge/bilibili"),
+        Path("editing/chrome/bilibili"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("failure", "stage"),
+    [
+        (BrowserChannelUnavailableError(), "unavailable"),
+        (BrowserLaunchError(), "launch"),
+        (BrowserNavigationError(), "navigation"),
+        (BrowserDesktopUnavailableError(), "desktop"),
+        (BrowserWindowVerificationError(), "window_verification"),
+    ],
+)
+async def test_explicit_channel_failure_does_not_fallback(
+    tmp_path: Path,
+    failure: Exception,
+    stage: str,
+) -> None:
+    requested: list[BrowserChannel] = []
+
+    def unavailable(channel: BrowserChannel) -> FakeDriver:
+        requested.append(channel)
+        raise failure
+
+    auth = PlaywrightAuthenticationGateway(
+        root_dir=tmp_path / "auth",
+        driver_factory=unavailable,
+        native_windows=True,
+    )
+
+    with pytest.raises(BrowserChannelSelectionError) as captured:
+        await auth.ensure_authenticated(
+            (Platform.BILIBILI,),
+            "editing",
+            30,
+            browser_channel=BrowserChannel.EDGE,
+        )
+
+    assert requested == [BrowserChannel.EDGE]
+    assert captured.value.code == "browser_channel_failed"
+    assert captured.value.details["attempts"] == [
+        {
+            "browser_channel": "edge",
+            "stage": stage,
+            "reason": {
+                "unavailable": "browser_channel_unavailable",
+                "launch": "browser_launch_failed",
+                "navigation": "browser_navigation_failed",
+                "desktop": "interactive_desktop_unavailable",
+                "window_verification": "browser_window_not_verified",
+            }[stage],
+            "required_action": {
+                "unavailable": "install_selected_browser",
+                "launch": "repair_selected_browser",
+                "navigation": "check_network_and_retry",
+                "desktop": "run_from_an_interactive_desktop",
+                "window_verification": "keep_the_login_window_visible",
+            }[stage],
+        }
+    ]
+
+
+async def test_auto_exhaustion_reports_only_safe_structured_attempts(
+    tmp_path: Path,
+) -> None:
+    secret_path = tmp_path / "secret browser path"
+
+    def unavailable(_channel: BrowserChannel) -> FakeDriver:
+        try:
+            raise OSError(secret_path)
+        except OSError as error:
+            raise BrowserChannelUnavailableError from error
+
+    auth = PlaywrightAuthenticationGateway(
+        root_dir=tmp_path / "auth",
+        driver_factory=unavailable,
+        native_windows=True,
+    )
+
+    with pytest.raises(BrowserChannelSelectionError) as captured:
+        await auth.ensure_authenticated(
+            (Platform.BILIBILI,),
+            "editing",
+            30,
+            browser_channel=BrowserChannel.AUTO,
+        )
+
+    assert captured.value.code == "browser_channel_exhausted"
+    assert [attempt["browser_channel"] for attempt in captured.value.details["attempts"]] == [
+        "edge",
+        "chrome",
+    ]
+    assert str(secret_path) not in str(captured.value.details)
 
 
 async def test_ensure_authenticated_reports_one_platform_login_lifecycle(
@@ -183,7 +338,7 @@ async def test_ensure_authenticated_reports_one_platform_login_lifecycle(
         progress=progress,
     )
 
-    assert result[0].status is AuthStatus.VALID
+    assert result.probes[0].status is AuthStatus.VALID
     assert [event for event, _details in progress.events] == [
         "authentication_probe_started",
         "authentication_probe_completed",
@@ -191,7 +346,11 @@ async def test_ensure_authenticated_reports_one_platform_login_lifecycle(
         "authentication_login_waiting",
         "authentication_platform_completed",
     ]
-    common = {"platform": "bilibili", "auth_profile": "editing"}
+    common = {
+        "platform": "bilibili",
+        "auth_profile": "editing",
+        "browser_channel": "chrome",
+    }
     assert progress.events[0][1] == common
     assert progress.events[1][1] == {
         **common,
@@ -203,7 +362,7 @@ async def test_ensure_authenticated_reports_one_platform_login_lifecycle(
         "actor": "human",
         "deadline": "2026-07-29T12:05:21Z",
         "wait_seconds": 321,
-        "hint": "Check Chrome in the taskbar and do not close the login window.",
+        "hint": "Check chrome in the taskbar and do not close the login window.",
     }
     assert progress.events[3][1] == progress.events[2][1]
     assert progress.events[4][1] == {
@@ -215,7 +374,13 @@ async def test_ensure_authenticated_reports_one_platform_login_lifecycle(
 
 async def test_valid_probe_skips_headed_login(tmp_path: Path) -> None:
     driver = FakeDriver()
-    profile_dir = tmp_path / "auth" / "default" / Platform.BILIBILI.value
+    profile_dir = (
+        tmp_path
+        / "auth"
+        / "default"
+        / BrowserChannel.CHROME.value
+        / Platform.BILIBILI.value
+    )
     profile_dir.mkdir(parents=True)
     driver.probes[Platform.BILIBILI] = DriverProbe(
         AuthStatus.VALID,
@@ -228,7 +393,7 @@ async def test_valid_probe_skips_headed_login(tmp_path: Path) -> None:
         600,
     )
 
-    assert result[0].status is AuthStatus.VALID
+    assert result.probes[0].status is AuthStatus.VALID
     assert driver.calls == [("probe", Platform.BILIBILI, None)]
 
 
@@ -237,8 +402,8 @@ async def test_valid_probe_skips_headed_login(tmp_path: Path) -> None:
     [
         (
             BrowserDesktopUnavailableError(),
-            AuthenticationDesktopUnavailableError,
-            "auth_desktop_unavailable",
+            BrowserChannelSelectionError,
+            "browser_channel_failed",
         ),
         (
             BrowserLoginTimeoutError(),
@@ -264,16 +429,19 @@ async def test_headed_login_failures_are_structured_and_credential_free(
         )
 
     assert captured.value.code == code
-    assert captured.value.details["platform"] == "bilibili"
+    if code == "browser_channel_failed":
+        assert captured.value.details["attempts"][0]["stage"] == "desktop"
+    else:
+        assert captured.value.details["platform"] == "bilibili"
     assert "cookie" not in str(captured.value.details).lower()
 
 
 async def test_profile_lock_is_held_for_driver_lifetime(tmp_path: Path) -> None:
     root = tmp_path / "auth"
-    lock = _ProcessFileLock(root / ".locks" / "editing.bilibili.lock")
+    lock = _ProcessFileLock(root / ".locks" / "editing.chrome.bilibili.lock")
     assert lock.acquire(0.1)
     driver = FakeDriver()
-    profile_dir = root / "editing" / Platform.BILIBILI.value
+    profile_dir = root / "editing" / "chrome" / Platform.BILIBILI.value
     profile_dir.mkdir(parents=True)
 
     try:
@@ -292,7 +460,7 @@ async def test_profile_lock_is_held_for_driver_lifetime(tmp_path: Path) -> None:
 
 def test_profile_lock_excludes_a_separate_process(tmp_path: Path) -> None:
     root = tmp_path / "auth"
-    lock_path = root / ".locks" / "editing.bilibili.lock"
+    lock_path = root / ".locks" / "editing.chrome.bilibili.lock"
     child_code = (
         "import sys\n"
         "from pathlib import Path\n"
@@ -332,7 +500,7 @@ def test_profile_lock_excludes_a_separate_process(tmp_path: Path) -> None:
 
 def test_cancelled_lock_wait_does_not_delay_cli_process_exit(tmp_path: Path) -> None:
     root = tmp_path / "auth"
-    held = _ProcessFileLock(root / ".locks" / "default.bilibili.lock")
+    held = _ProcessFileLock(root / ".locks" / "default.chrome.bilibili.lock")
     assert held.acquire(0.1)
     child_code = (
         "import asyncio, sys\n"
@@ -371,7 +539,13 @@ def test_cancelled_lock_wait_does_not_delay_cli_process_exit(tmp_path: Path) -> 
 
 async def test_lock_release_after_probe_allows_next_gateway(tmp_path: Path) -> None:
     driver = FakeDriver()
-    profile_dir = tmp_path / "auth" / "default" / Platform.BILIBILI.value
+    profile_dir = (
+        tmp_path
+        / "auth"
+        / "default"
+        / BrowserChannel.CHROME.value
+        / Platform.BILIBILI.value
+    )
     profile_dir.mkdir(parents=True)
     first = gateway(tmp_path, driver)
     second = gateway(tmp_path, driver)
@@ -386,7 +560,7 @@ async def test_logout_requires_exact_confirmation_and_deletes_one_platform_only(
     tmp_path: Path,
 ) -> None:
     driver = FakeDriver()
-    root = tmp_path / "auth" / "editing"
+    root = tmp_path / "auth" / "editing" / BrowserChannel.CHROME.value
     bili_cookie = root / Platform.BILIBILI.value / "profile.bin"
     douyin_cookie = root / Platform.DOUYIN.value / "profile.bin"
     bili_cookie.parent.mkdir(parents=True)
@@ -418,7 +592,7 @@ async def test_event_loop_remains_responsive_while_waiting_for_lock(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "auth"
-    held = _ProcessFileLock(root / ".locks" / "default.bilibili.lock")
+    held = _ProcessFileLock(root / ".locks" / "default.chrome.bilibili.lock")
     assert held.acquire(0.1)
     ticked = False
 
@@ -476,6 +650,7 @@ async def test_authentication_browser_explicitly_bypasses_system_proxy(
         FakePlaywrightManager,
     )
     driver = PlaywrightBrowserAuthenticationDriver(
+        channel=BrowserChannel.EDGE,
         desktop_verifier=lambda _path, _started_at: True
     )
     monkeypatch.setattr(
@@ -487,6 +662,8 @@ async def test_authentication_browser_explicitly_bypasses_system_proxy(
     result = await driver.probe(Platform.BILIBILI, tmp_path)
 
     assert result.status is AuthStatus.VALID
+    assert launches[0]["channel"] == "msedge"
+    assert launches[0]["headless"] is True
     assert launches[0]["args"] == ["--no-proxy-server"]
     assert launches[0]["chromium_sandbox"] is True
     assert launches[0]["service_workers"] == "block"
@@ -932,6 +1109,325 @@ async def test_xiaohongshu_uses_visible_profile_link_over_bare_endpoint() -> Non
     )
 
 
+async def test_xiaohongshu_unknown_rendered_406_enters_visible_login(
+    tmp_path: Path,
+) -> None:
+    class FakeResponse:
+        status = 406
+        ok = False
+
+        async def json(self) -> dict[str, object]:
+            return {"code": -1, "success": False}
+
+    class FakePage:
+        logged_in = False
+
+        async def evaluate(self, expression: str) -> dict[str, bool]:
+            assert "/user/profile/" in expression
+            return {
+                "profile_me_visible": self.logged_in,
+                "captcha_prompt": False,
+                "login_container_visible": False,
+            }
+
+    class FakeContext:
+        request: FakeContext
+
+        def __init__(self) -> None:
+            self.pages = [FakePage()]
+            self.request = self
+
+        async def get(self, _url: str, *, timeout: int) -> FakeResponse:
+            assert timeout == 15_000
+            return FakeResponse()
+
+    context = FakeContext()
+
+    class XiaohongshuDriver(FakeDriver):
+        async def probe(
+            self,
+            platform: Platform,
+            user_data_dir: Path,
+        ) -> DriverProbe:
+            assert platform is Platform.XIAOHONGSHU
+            assert user_data_dir.name == platform.value
+            self.calls.append(("probe", platform, None))
+            return await _probe_xiaohongshu(context)  # type: ignore[arg-type]
+
+        async def login(
+            self,
+            platform: Platform,
+            user_data_dir: Path,
+            wait_seconds: int,
+            progress: Callable[[str, dict[str, object]], None] | None = None,
+        ) -> DriverProbe:
+            assert platform is Platform.XIAOHONGSHU
+            assert user_data_dir.name == platform.value
+            self.calls.append(("login", platform, wait_seconds))
+            if progress is not None:
+                progress("authentication_login_window_opened", {})
+                progress("authentication_login_waiting", {})
+            context.pages[0].logged_in = True
+            return await _probe_xiaohongshu(context)  # type: ignore[arg-type]
+
+    profile_dir = (
+        tmp_path
+        / "auth"
+        / "editing"
+        / BrowserChannel.CHROME.value
+        / Platform.XIAOHONGSHU.value
+    )
+    profile_dir.mkdir(parents=True)
+    driver = XiaohongshuDriver()
+
+    result = await gateway(tmp_path, driver).ensure_authenticated(
+        (Platform.XIAOHONGSHU,),
+        "editing",
+        30,
+    )
+
+    assert result.probes[0].status is AuthStatus.VALID
+    assert driver.calls == [
+        ("probe", Platform.XIAOHONGSHU, None),
+        ("login", Platform.XIAOHONGSHU, 30),
+    ]
+
+
+async def test_xiaohongshu_real_headed_login_accepts_rendered_profile_after_406(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    launches: list[dict[str, object]] = []
+    events: list[str] = []
+    rendered_checks = 0
+
+    class FakeResponse:
+        status = 406
+        ok = False
+
+    class FakePage:
+        async def goto(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+
+        async def bring_to_front(self) -> None:
+            return None
+
+        async def evaluate(self, expression: str) -> dict[str, bool]:
+            nonlocal rendered_checks
+            assert "/user/profile/" in expression
+            rendered_checks += 1
+            return {
+                "profile_me_visible": rendered_checks >= 2,
+                "captcha_prompt": False,
+                "login_container_visible": False,
+            }
+
+    class FakeContext:
+        request: FakeContext
+
+        def __init__(self) -> None:
+            self.pages = [FakePage()]
+            self.request = self
+
+        async def get(self, _url: str, *, timeout: int) -> FakeResponse:
+            assert timeout == 15_000
+            return FakeResponse()
+
+        async def close(self) -> None:
+            return None
+
+    class FakeChromium:
+        async def launch_persistent_context(
+            self,
+            user_data_dir: str,
+            **kwargs: object,
+        ) -> FakeContext:
+            del user_data_dir
+            launches.append(kwargs)
+            return FakeContext()
+
+    class FakePlaywrightManager:
+        async def __aenter__(self) -> SimpleNamespace:
+            return SimpleNamespace(chromium=FakeChromium())
+
+        async def __aexit__(self, *args: object) -> None:
+            del args
+
+    monkeypatch.setattr(
+        "material_collector.infrastructure.authentication.async_playwright",
+        FakePlaywrightManager,
+    )
+    monkeypatch.setattr(
+        "material_collector.infrastructure.authentication.asyncio.sleep",
+        AsyncMock(),
+    )
+    driver = PlaywrightBrowserAuthenticationDriver(
+        channel=BrowserChannel.CHROME,
+        desktop_verifier=lambda _path, _started_at: True,
+    )
+
+    result = await driver.login(
+        Platform.XIAOHONGSHU,
+        tmp_path,
+        30,
+        lambda event, _details: events.append(event),
+    )
+
+    assert result == DriverProbe(AuthStatus.VALID, "platform_reports_logged_in")
+    assert rendered_checks == 2
+    assert launches[0]["channel"] == "chrome"
+    assert launches[0]["headless"] is False
+    assert events[:3] == [
+        "authentication_login_window_opening",
+        "authentication_login_window_opened",
+        "authentication_login_waiting",
+    ]
+
+
+async def test_xiaohongshu_real_headed_login_times_out_on_persistent_406(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    clock = 0.0
+
+    class FakeResponse:
+        status = 406
+        ok = False
+
+    class FakePage:
+        async def goto(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+
+        async def bring_to_front(self) -> None:
+            return None
+
+        async def evaluate(self, expression: str) -> dict[str, bool]:
+            assert "/user/profile/" in expression
+            return {
+                "profile_me_visible": False,
+                "captcha_prompt": False,
+                "login_container_visible": False,
+            }
+
+    class FakeContext:
+        request: FakeContext
+
+        def __init__(self) -> None:
+            self.pages = [FakePage()]
+            self.request = self
+
+        async def get(self, _url: str, *, timeout: int) -> FakeResponse:
+            assert timeout == 15_000
+            return FakeResponse()
+
+        async def close(self) -> None:
+            return None
+
+    class FakeChromium:
+        async def launch_persistent_context(
+            self,
+            user_data_dir: str,
+            **kwargs: object,
+        ) -> FakeContext:
+            del user_data_dir, kwargs
+            return FakeContext()
+
+    class FakePlaywrightManager:
+        async def __aenter__(self) -> SimpleNamespace:
+            return SimpleNamespace(chromium=FakeChromium())
+
+        async def __aexit__(self, *args: object) -> None:
+            del args
+
+    async def advance(seconds: float) -> None:
+        nonlocal clock
+        clock += seconds
+
+    monkeypatch.setattr(
+        "material_collector.infrastructure.authentication.async_playwright",
+        FakePlaywrightManager,
+    )
+    monkeypatch.setattr(
+        "material_collector.infrastructure.authentication.time.monotonic",
+        lambda: clock,
+    )
+    monkeypatch.setattr(
+        "material_collector.infrastructure.authentication.asyncio.sleep",
+        advance,
+    )
+    driver = PlaywrightBrowserAuthenticationDriver(
+        desktop_verifier=lambda _path, _started_at: True,
+    )
+
+    with pytest.raises(BrowserLoginTimeoutError) as captured:
+        await driver.login(
+            Platform.XIAOHONGSHU,
+            tmp_path,
+            2,
+            lambda event, _details: events.append(event),
+        )
+
+    assert captured.value.reason_code == "interactive_login_required"
+    assert events[:3] == [
+        "authentication_login_window_opening",
+        "authentication_login_window_opened",
+        "authentication_login_waiting",
+    ]
+
+
+async def test_xiaohongshu_persistent_406_ambiguity_reports_login_timeout(
+    tmp_path: Path,
+) -> None:
+    class AmbiguousDriver(FakeDriver):
+        async def probe(
+            self,
+            platform: Platform,
+            user_data_dir: Path,
+        ) -> DriverProbe:
+            assert platform is Platform.XIAOHONGSHU
+            assert user_data_dir.name == platform.value
+            self.calls.append(("probe", platform, None))
+            return DriverProbe(AuthStatus.INVALID, "interactive_login_required")
+
+        async def login(
+            self,
+            platform: Platform,
+            user_data_dir: Path,
+            wait_seconds: int,
+            progress: Callable[[str, dict[str, object]], None] | None = None,
+        ) -> DriverProbe:
+            del progress
+            assert platform is Platform.XIAOHONGSHU
+            assert user_data_dir.name == platform.value
+            self.calls.append(("login", platform, wait_seconds))
+            return DriverProbe(AuthStatus.INVALID, "interactive_login_required")
+
+    profile_dir = (
+        tmp_path
+        / "auth"
+        / "editing"
+        / BrowserChannel.CHROME.value
+        / Platform.XIAOHONGSHU.value
+    )
+    profile_dir.mkdir(parents=True)
+
+    with pytest.raises(AuthenticationLoginTimeoutError) as captured:
+        await gateway(tmp_path, AmbiguousDriver()).ensure_authenticated(
+            (Platform.XIAOHONGSHU,),
+            "editing",
+            30,
+        )
+
+    assert captured.value.code == "auth_login_timeout"
+    assert captured.value.details["reason_code"] == "interactive_login_required"
+    assert captured.value.details["platform"] == "xiaohongshu"
+    assert (
+        captured.value.details["required_action"]
+        == "complete_login_in_visible_browser"
+    )
+
+
 async def test_xiaohongshu_captcha_is_not_accepted_as_logged_in() -> None:
     class FakePage:
         async def evaluate(self, expression: str) -> dict[str, bool]:
@@ -1024,7 +1520,19 @@ async def test_headed_browser_stops_when_user_closes_login_window(
     assert events[-1] == "authentication_login_window_closed"
 
 
-async def test_headed_browser_rejects_inactive_desktop_before_waiting(
+async def test_headed_browser_rejects_unavailable_interactive_desktop_before_launch(
+    tmp_path: Path,
+) -> None:
+    driver = PlaywrightBrowserAuthenticationDriver(
+        desktop_available=lambda: False,
+        desktop_verifier=lambda _path, _started_at: True,
+    )
+
+    with pytest.raises(BrowserDesktopUnavailableError):
+        await driver.login(Platform.BILIBILI, tmp_path, 30)
+
+
+async def test_headed_browser_rejects_unverified_window_before_waiting(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1068,7 +1576,7 @@ async def test_headed_browser_rejects_inactive_desktop_before_waiting(
         desktop_verifier=lambda _path, _started_at: False
     )
 
-    with pytest.raises(BrowserDesktopUnavailableError):
+    with pytest.raises(BrowserWindowVerificationError):
         await driver.login(
             Platform.BILIBILI,
             tmp_path,
@@ -1127,7 +1635,7 @@ async def test_headed_browser_verifies_the_launched_profile_not_any_chrome(
         desktop_verifier=verify_profile,
     )
 
-    with pytest.raises(BrowserDesktopUnavailableError):
+    with pytest.raises(BrowserWindowVerificationError):
         await driver.login(Platform.BILIBILI, tmp_path, 30)
 
     assert len(verified_profiles) == 1

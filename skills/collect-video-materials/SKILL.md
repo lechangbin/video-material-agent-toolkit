@@ -10,18 +10,34 @@ PowerShell launcher.
 
 ## Invoke
 
-1. Read [references/cli-execution-contract.md](references/cli-execution-contract.md).
-2. Validate that the workspace and versioned JSON inputs are explicit.
-3. Invoke `scripts/invoke-collector.ps1` for every `run`, `resume`, `status`, or `cancel`.
-4. Pass values only through the script parameters. Do not edit, copy, inline, or reimplement the
-   script.
-5. For a successfully started `run` or `resume`, persist the returned `control_path`,
+1. Resolve the compatible CLI exactly once with
+   `python <skill-root>/scripts/resolve_material_collector.py` (use `py -3.14` instead of
+   `python` on Windows when that is the configured Python launcher). Save the successful JSON
+   `command` value as the absolute Collector command. Do not scan PATH, source, executables, or
+   installation directories yourself. Stop on `material_collector_cli_not_found` or
+   `material_collector_cli_incompatible` and report its structured recovery object.
+2. Read [references/input-contracts.md](references/input-contracts.md), then read
+   [references/cli-execution-contract.md](references/cli-execution-contract.md). These references
+   expose the complete request shapes and commands; do not discover either contract with `--help`,
+   `contracts normalize`, trial JSON, source inspection, or PATH probing.
+3. Validate that the workspace and versioned JSON inputs are explicit. QueryPlans must use
+   schema 2.0, declare one non-empty `platform_scope`, and copy that complete scope into every
+   expression's `target_platforms`.
+4. On Windows, invoke `scripts/invoke-collector.ps1` for every `run`, `resume`, `status`, or
+   `cancel` and pass the resolver's command through `ResolvedCollectorPath`. This freezes both the
+   executor and child CLI to that validated file even if PATH contains an older installation. On
+   non-Windows hosts, invoke the resolved absolute command with `executor invoke` and the matching
+   documented options; PowerShell is not required.
+5. Pass values only through the documented adapter or executor parameters. Do not edit, copy,
+   inline, or reimplement either interface.
+6. For a successfully started `run` or `resume`, persist the returned `control_path`,
    `process_id`, `collector_process_id`, `session_id`, `stdout_path`, and `stderr_path` in the
    current Agent task.
    `status` and `cancel` instead relay the CLI result and do not create an executor record.
 
-Do not use `Start-Process`, PowerShell Jobs, scheduled tasks, Bash continuations, or a second
-terminal command to replace the bundled runner.
+The collector-owned executor, not the Skill script, owns locks, process creation, handshakes,
+logs, and recovery checks. Do not use `Start-Process`, PowerShell Jobs, scheduled tasks, Bash
+continuations, or a second terminal command to replace it.
 
 ## Monitor
 
@@ -32,7 +48,8 @@ terminal command to replace the bundled runner.
 - Allow another `run` in the same material workspace; it creates a distinct session. Never start
   a second `resume` for one session.
 - Treat `authentication_login_waiting` as a human action. Tell the user which platform needs
-  login and ask them to check Chrome in the taskbar. Keep the executor alive.
+  login and which frozen browser channel was selected, then ask them to check that Edge or Chrome
+  window in the taskbar. Keep the executor alive.
 - Treat an unchanged log as normal during human login. Never use log silence as proof of death.
 - Treat `search_plan_started`, `search_plan_committed`, and `search_plan_settled` as progress
   only, never as the final session result. `search_plan_committed` means every request in that
@@ -63,11 +80,22 @@ Use the final JSON as the authority:
   already advanced to a checkpoint.
 - `workflow_retryable` plus `runtime.state=idle` and `runtime.next_stage=search` means no search
   batch was available to advance; one runner-managed `resume` may retry the still-open stage.
-- `action_required.actor=human`: report the requested human action and wait.
-- `action_required.actor=agent`: read the referenced request artifact, create the versioned
-  decision artifact, and resume through the bundled runner.
+- `action_required.actor=human` with `type=manual_review_required`: report the requested review,
+  wait for the human, then use only the documented `review list`, `review approve`, or
+  `review reject` commands before resuming. Never approve or reject on the human's behalf.
+- Any other `action_required.actor=human`: report the exact action and wait; do not invent a
+  decision file or alternate login command.
+- `action_required.actor=agent`: follow only the named versioned artifact contract. If no such
+  contract is linked in the result or this Skill, stop with a contract error instead of guessing.
 - `status=integration_required`: stop at the declared external integration boundary.
 - `status=cancelled|completed`: stop; do not resume a terminal session.
+
+When presenting downloaded material, use each primary asset's `display_relative_path` as the
+human-readable title entry when it is non-null. Keep `relative_path` as the authoritative
+content-addressed asset for integrity checks and downstream machine processing. A fallback source
+intentionally has `display_relative_path: null`; do not invent or rename another title entry.
+`named_view_publish_failed` is retryable: resume the same session through the bundled runner and do
+not start a replacement download.
 
 Use `select-video-segments` only for the isolated Top-K decision requested after external video
 understanding. Do not move collection execution into that Skill.

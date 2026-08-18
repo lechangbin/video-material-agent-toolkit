@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from typing import Protocol
 
 from material_collector.core.fingerprints import FingerprintMatch
 from material_collector.core.media import (
     AssetRecord,
+    AuthenticationSelection,
     AuthProbe,
+    BrowserChannel,
     FetchRequest,
     FetchResult,
     MediaUnit,
@@ -17,13 +20,19 @@ from material_collector.core.media import (
     ResolvedSource,
     SearchBatch,
     SearchRequest,
+    TitleViewPublication,
 )
 
 
 class AuthenticationGateway(Protocol):
     """Own persistent browser authentication without exposing credentials."""
 
-    async def probe(self, platform: Platform, auth_profile: str) -> AuthProbe: ...
+    async def probe(
+        self,
+        platform: Platform,
+        auth_profile: str,
+        browser_channel: BrowserChannel = BrowserChannel.CHROME,
+    ) -> AuthProbe: ...
 
     async def ensure_authenticated(
         self,
@@ -31,14 +40,16 @@ class AuthenticationGateway(Protocol):
         auth_profile: str,
         wait_seconds: int,
         *,
+        browser_channel: BrowserChannel = BrowserChannel.CHROME,
         progress: ProgressReporter | None = None,
-    ) -> tuple[AuthProbe, ...]: ...
+    ) -> AuthenticationSelection: ...
 
     async def logout(
         self,
         platform: Platform,
         auth_profile: str,
         confirmation: str,
+        browser_channel: BrowserChannel = BrowserChannel.CHROME,
     ) -> None: ...
 
 
@@ -52,6 +63,22 @@ class SearchProvider(Protocol):
         request: SearchRequest,
         context: PlatformContext,
     ) -> SearchBatch: ...
+
+
+class SearchBrowserSessions(Protocol):
+    """Retain and close execution-scoped browser contexts used for search."""
+
+    def search_execution(
+        self,
+        platforms: tuple[Platform, ...],
+        context: PlatformContext,
+    ) -> AbstractAsyncContextManager[None]: ...
+
+    async def reset_search_platform(
+        self,
+        platform: Platform,
+        context: PlatformContext,
+    ) -> None: ...
 
 
 class SourceResolver(Protocol):
@@ -83,6 +110,12 @@ class AssetStore(Protocol):
     """Import and resolve durable workspace-owned media assets."""
 
     def import_fetch(self, fetched: FetchResult) -> AssetRecord: ...
+
+    def publish_title_view(
+        self,
+        asset: AssetRecord,
+        publication: TitleViewPublication,
+    ) -> AssetRecord: ...
 
     def resolve(self, asset: AssetRecord) -> Path: ...
 

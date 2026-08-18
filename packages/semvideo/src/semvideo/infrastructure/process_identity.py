@@ -64,11 +64,15 @@ def _linux_process_started_at(pid: int) -> str:
     try:
         with open(f"/proc/{pid}/stat", encoding="ascii") as stream:
             stat_fields = stream.read().split()
+        if stat_fields[2] == "Z":
+            raise ProcessLookupFailure(f"process {pid} is a zombie")
         start_ticks = int(stat_fields[21])
         clock_ticks = os.sysconf("SC_CLK_TCK")
         with open("/proc/stat", encoding="ascii") as stream:
             boot_line = next(line for line in stream if line.startswith("btime "))
         boot_time = int(boot_line.split()[1])
+    except ProcessLookupFailure:
+        raise
     except (OSError, StopIteration, ValueError, IndexError) as error:
         raise ProcessLookupFailure(f"cannot inspect process {pid}") from error
     return _iso_utc(datetime.fromtimestamp(boot_time + start_ticks / clock_ticks, UTC))

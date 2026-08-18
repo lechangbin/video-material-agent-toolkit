@@ -7,15 +7,35 @@ import os
 import re
 import shutil
 import tempfile
+import unicodedata
 import uuid
 from pathlib import Path
 
-from material_collector.core.errors import WorkspaceError
-from material_collector.core.media import AssetRecord, FetchResult
+from material_collector.core.errors import CollectorError, WorkspaceError
+from material_collector.core.media import (
+    AssetRecord,
+    FetchResult,
+    MediaQuality,
+    TitleViewPublication,
+)
 
 ASSET_DIRECTORY = "assets"
+MATERIAL_VIEW_DIRECTORY = "materials"
 _SAFE_SUFFIX = re.compile(r"^\.[A-Za-z0-9]{1,10}$")
 _SAFE_SESSION_ID = re.compile(r"^ses_[A-Za-z0-9_-]{1,80}$")
+_WINDOWS_MAX_TARGET_LENGTH = 259
+_MAX_TITLE_LENGTH = 80
+_MIN_HASHED_TITLE_LENGTH = 12
+_WINDOWS_INVALID = frozenset('<>:"/\\|?*')
+_WINDOWS_RESERVED = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{index}" for index in range(1, 10)}
+    | {f"LPT{index}" for index in range(1, 10)}
+)
+_QUALITY_DIRECTORY = {
+    MediaQuality.LOW_PROXY: "low-proxy",
+    MediaQuality.HIGH: "high-quality",
+}
 
 
 class WorkspaceAssetStore:
@@ -75,7 +95,13 @@ class WorkspaceAssetStore:
                     details={"path": str(target), "sha256": digest},
                 )
         else:
-            _copy_atomically(source, target, target_directory)
+            _copy_atomically(
+                source,
+                target,
+                target_directory,
+                expected_sha256=digest,
+                expected_size_bytes=size_bytes,
+            )
 
         relative_path = target.relative_to(self.workspace).as_posix()
         return AssetRecord(
@@ -113,6 +139,115 @@ class WorkspaceAssetStore:
                 details={"asset_id": asset.asset_id},
             )
         return candidate
+
+    def publish_title_view(
+        self,
+        asset: AssetRecord,
+        publication: TitleViewPublication,
+    ) -> AssetRecord:
+        """Publish one readable session view without changing asset identity."""
+
+        if _SAFE_SESSION_ID.fullmatch(publication.session_id) is None:
+            raise WorkspaceError(
+                "The title material view session identifier is invalid.",
+                details={"session_id": publication.session_id},
+            )
+        source = self.resolve(asset)
+        local_media_unit_id = asset.media_unit_id.removeprefix(
+            f"{publication.platform.value}:"
+        )
+        source_title_limit = _MAX_TITLE_LENGTH
+        media_title_limit = _MAX_TITLE_LENGTH
+        source_identity_limit = 10
+        media_identity_limit = 10
+        while True:
+            source_directory = (
+                f"{_safe_title(publication.source_title, source_title_limit)}__"
+                f"{publication.platform.value}__"
+                f"{_safe_identity(publication.source_id, source_identity_limit)}"
+            )
+            filename = (
+                f"{_safe_title(publication.media_unit_title, media_title_limit)}__"
+                f"{_safe_identity(local_media_unit_id, media_identity_limit)}"
+                f"{source.suffix.lower()}"
+            )
+            target_directory = (
+                self.workspace
+                / MATERIAL_VIEW_DIRECTORY
+                / "by-session"
+                / publication.session_id
+                / source_directory
+                / _QUALITY_DIRECTORY[asset.quality]
+            )
+            target = target_directory / filename
+            if os.name != "nt" or len(str(target)) <= _WINDOWS_MAX_TARGET_LENGTH:
+                break
+            if source_identity_limit > 0 or media_identity_limit > 0:
+                if source_identity_limit >= media_identity_limit:
+                    source_identity_limit = max(0, source_identity_limit - 1)
+                else:
+                    media_identity_limit = max(0, media_identity_limit - 1)
+            elif source_title_limit > _MIN_HASHED_TITLE_LENGTH or (
+                media_title_limit > _MIN_HASHED_TITLE_LENGTH
+            ):
+                if source_title_limit >= media_title_limit:
+                    source_title_limit = max(
+                        _MIN_HASHED_TITLE_LENGTH,
+                        source_title_limit - 1,
+                    )
+                else:
+                    media_title_limit = max(
+                        _MIN_HASHED_TITLE_LENGTH,
+                        media_title_limit - 1,
+                    )
+            else:
+                break
+        relative_path = target.relative_to(self.workspace).as_posix()
+        try:
+            if os.name == "nt" and len(str(target)) > _WINDOWS_MAX_TARGET_LENGTH:
+                raise OSError("The title material view path exceeds Windows limits.")
+            target_directory.mkdir(parents=True, exist_ok=True)
+            target_valid = False
+            if target.exists():
+                digest, size_bytes = _hash_file(target)
+                target_valid = digest == asset.sha256 and size_bytes == asset.size_bytes
+            if not target_valid and not target.exists():
+                try:
+                    os.link(source, target)
+                except FileExistsError:
+                    pass
+                except OSError:
+                    _copy_atomically(
+                        source,
+                        target,
+                        target_directory,
+                        expected_sha256=asset.sha256,
+                        expected_size_bytes=asset.size_bytes,
+                    )
+            elif not target_valid:
+                _copy_atomically(
+                    source,
+                    target,
+                    target_directory,
+                    expected_sha256=asset.sha256,
+                    expected_size_bytes=asset.size_bytes,
+                )
+            digest, size_bytes = _hash_file(target)
+            if digest != asset.sha256 or size_bytes != asset.size_bytes:
+                raise OSError("The title material view failed integrity verification.")
+        except OSError as error:
+            raise CollectorError(
+                "named_view_publish_failed",
+                "The title material view could not be published.",
+                details={
+                    "media_unit_id": asset.media_unit_id,
+                    "quality": asset.quality.value,
+                    "display_relative_path": relative_path,
+                    "retryable": True,
+                    "reason": type(error).__name__,
+                },
+            ) from error
+        return asset.model_copy(update={"display_relative_path": relative_path})
 
     def allocate_staging_path(
         self,
@@ -179,7 +314,14 @@ def _hash_file(path: Path) -> tuple[str, int]:
     return digest.hexdigest(), size_bytes
 
 
-def _copy_atomically(source: Path, target: Path, target_directory: Path) -> None:
+def _copy_atomically(
+    source: Path,
+    target: Path,
+    target_directory: Path,
+    *,
+    expected_sha256: str,
+    expected_size_bytes: int,
+) -> None:
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=".import-",
         suffix=".tmp",
@@ -191,6 +333,9 @@ def _copy_atomically(source: Path, target: Path, target_directory: Path) -> None
             shutil.copyfileobj(input_file, output, length=1024 * 1024)
             output.flush()
             os.fsync(output.fileno())
+        digest, size_bytes = _hash_file(temporary_path)
+        if digest != expected_sha256 or size_bytes != expected_size_bytes:
+            raise OSError("The staged asset copy failed integrity verification.")
         os.replace(temporary_path, target)
     except Exception:
         try:
@@ -198,3 +343,43 @@ def _copy_atomically(source: Path, target: Path, target_directory: Path) -> None
         except OSError:
             pass
         raise
+
+
+def _safe_title(value: str, max_length: int) -> str:
+    normalized = unicodedata.normalize("NFKC", value)
+    cleaned = "".join(
+        "_"
+        if character in _WINDOWS_INVALID
+        or unicodedata.category(character).startswith("C")
+        else character
+        for character in normalized
+    )
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+    if not cleaned:
+        cleaned = "untitled"
+    device_stem = cleaned.split(".", 1)[0].upper()
+    if device_stem in _WINDOWS_RESERVED:
+        cleaned = f"_{cleaned}"
+    if cleaned != value or len(cleaned) > max_length:
+        digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
+        prefix_length = max_length - len(digest) - 2
+        cleaned = f"{cleaned[:prefix_length].rstrip(' .')}--{digest}"
+    return cleaned
+
+
+def _safe_identity(value: str, readable_length: int = 10) -> str:
+    normalized = unicodedata.normalize("NFKC", value)
+    readable = "".join(
+        character
+        if character.isalnum() or character in {"-", "_", "."}
+        else "_"
+        for character in normalized
+    ).strip(" ._")
+    # The title view contains both a source identity and a media-unit identity.
+    # Keep their human hint deliberately short so ordinary Windows MAX_PATH
+    # workspaces still have room for the actual titles.
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
+    if readable_length <= 0:
+        return digest
+    readable = readable[:readable_length].rstrip(" ._") or "id"
+    return f"{readable}--{digest}"

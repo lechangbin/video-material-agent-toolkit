@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 import shutil
+import sys
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -34,7 +35,12 @@ def _write_json(path: Path, value: dict[str, Any]) -> None:
     )
 
 
-def _semantic_contracts(tmp_path: Path) -> tuple[Path, Path]:
+def _semantic_contracts(
+    tmp_path: Path,
+    *platform_scope: str,
+) -> tuple[Path, Path]:
+    if not platform_scope:
+        platform_scope = ("bilibili", "douyin", "xiaohongshu")
     input_path = tmp_path / "input.json"
     plans_path = tmp_path / "plans.json"
     _write_json(
@@ -52,7 +58,8 @@ def _semantic_contracts(tmp_path: Path) -> tuple[Path, Path]:
     _write_json(
         plans_path,
         {
-            "schema_version": "1.0",
+            "schema_version": "2.0",
+            "platform_scope": list(platform_scope),
             "plans": [
                 {
                     "query_plan_id": "qp_seg_001",
@@ -65,11 +72,7 @@ def _semantic_contracts(tmp_path: Path) -> tuple[Path, Path]:
                         {
                             "query_id": "q_city",
                             "text": "城市 清晨 航拍",
-                            "target_platforms": [
-                                "bilibili",
-                                "douyin",
-                                "xiaohongshu",
-                            ],
+                            "target_platforms": list(platform_scope),
                             "facet_ids": ["facet_city"],
                         }
                     ],
@@ -85,11 +88,7 @@ def _semantic_contracts(tmp_path: Path) -> tuple[Path, Path]:
                         {
                             "query_id": "q_people",
                             "text": "早高峰 通勤 人群",
-                            "target_platforms": [
-                                "bilibili",
-                                "douyin",
-                                "xiaohongshu",
-                            ],
+                            "target_platforms": list(platform_scope),
                             "facet_ids": ["facet_people"],
                         }
                     ],
@@ -213,20 +212,21 @@ def test_workflow_initialization_and_gap_round_preserve_budget(
                 "query_id": "q_city_round_002_01",
                 "text": "城市 清晨 街道 近景",
                 "target_platforms": [
-                    "bilibili",
-                    "douyin",
                     "xiaohongshu",
+                    "douyin",
+                    "bilibili",
                 ],
                 "facet_ids": ["facet_city"],
             }
         ],
     }
     batch = {
-        "schema_version": "video-material-understanding-batch/v1",
+        "schema_version": "video-material-understanding-batch/v2",
         "workflow_id": workflow["workflow_id"],
         "workflow_state_version": workflow["state_version"],
         "segment_id": "seg_001",
         "query_plan_id": "qp_seg_001",
+        "platform_scope": ["bilibili", "douyin", "xiaohongshu"],
         "budget": {"occupied_media_unit_count": 6},
     }
     refined, _refined_input, refined_plans = round_module.plan_round(
@@ -243,7 +243,133 @@ def test_workflow_initialization_and_gap_round_preserve_budget(
         "MaxRounds": 2,
         "MaxVideos": 12,
     }
-    assert refined_plans["plans"][0]["initial_queries"] == decision["next_queries"]
+    assert refined_plans["plans"][0]["initial_queries"][0][
+        "target_platforms"
+    ] == ["bilibili", "douyin", "xiaohongshu"]
+    mismatched_batch = {**batch, "platform_scope": ["bilibili"]}
+    with pytest.raises(round_module.RoundPlanError, match="batch platform scope"):
+        round_module.plan_round(
+            workflow=workflow,
+            segment_id="seg_001",
+            decision=decision,
+            batch=mismatched_batch,
+            previous_query_plans=[initial_plans],
+        )
+
+
+def test_workflow_and_initial_round_freeze_a_bilibili_only_scope(
+    tmp_path: Path,
+) -> None:
+    init_module = _load_script("init_workflow")
+    round_module = _load_script("plan_round")
+    input_path, plans_path = _semantic_contracts(tmp_path, "bilibili")
+    material_workspace = tmp_path / "materials"
+    semvideo_workspace = tmp_path / "semvideo"
+    material_workspace.mkdir()
+    semvideo_workspace.mkdir()
+
+    workflow = init_module.initialize(
+        input_path=input_path,
+        query_plans_path=plans_path,
+        workflow_root=tmp_path / "workflow",
+        material_workspace=material_workspace,
+        semvideo_workspace=semvideo_workspace,
+        semvideo_profile="default",
+        max_rounds=3,
+        max_videos=18,
+    )
+    _round, _round_input, round_plans = round_module.plan_round(
+        workflow=workflow,
+        segment_id="seg_001",
+        decision=None,
+        batch=None,
+    )
+
+    assert workflow["platform_scope"] == ["bilibili"]
+    assert round_plans["schema_version"] == "2.0"
+    assert round_plans["platform_scope"] == ["bilibili"]
+    assert round_plans["plans"][0]["initial_queries"][0]["target_platforms"] == [
+        "bilibili"
+    ]
+
+
+def test_gap_round_cannot_broaden_a_bilibili_only_scope(
+    tmp_path: Path,
+) -> None:
+    init_module = _load_script("init_workflow")
+    round_module = _load_script("plan_round")
+    input_path, plans_path = _semantic_contracts(tmp_path, "bilibili")
+    material_workspace = tmp_path / "materials"
+    semvideo_workspace = tmp_path / "semvideo"
+    material_workspace.mkdir()
+    semvideo_workspace.mkdir()
+    workflow = init_module.initialize(
+        input_path=input_path,
+        query_plans_path=plans_path,
+        workflow_root=tmp_path / "workflow",
+        material_workspace=material_workspace,
+        semvideo_workspace=semvideo_workspace,
+        semvideo_profile="default",
+        max_rounds=3,
+        max_videos=18,
+    )
+    _round, _round_input, previous_plans = round_module.plan_round(
+        workflow=workflow,
+        segment_id="seg_001",
+        decision=None,
+        batch=None,
+    )
+    decision = {
+        "schema_version": "video-material-gap-decision/v1",
+        "workflow_id": workflow["workflow_id"],
+        "workflow_state_version": workflow["state_version"],
+        "segment_id": "seg_001",
+        "query_plan_id": "qp_seg_001",
+        "round_number": 1,
+        "status": "insufficient",
+        "previous_query_texts": ["城市 清晨 航拍"],
+        "evidence": _selection_evidence(tmp_path, workflow),
+        "facet_assessment": [
+            {
+                "facet_id": "facet_city",
+                "status": "missing",
+                "reason": "缺少街道近景",
+            }
+        ],
+        "gaps": [
+            {
+                "gap_id": "gap_1",
+                "facet_ids": ["facet_city"],
+                "description": "缺少街道近景",
+            }
+        ],
+        "next_queries": [
+            {
+                "query_id": "q_scope_escape",
+                "text": "城市 清晨 街道 近景",
+                "target_platforms": ["bilibili", "douyin"],
+                "facet_ids": ["facet_city"],
+            }
+        ],
+    }
+    batch = {
+        "schema_version": "video-material-understanding-batch/v2",
+        "workflow_id": workflow["workflow_id"],
+        "workflow_state_version": workflow["state_version"],
+        "segment_id": "seg_001",
+        "query_plan_id": "qp_seg_001",
+        "platform_scope": ["bilibili"],
+        "budget": {"occupied_media_unit_count": 6},
+    }
+
+    with pytest.raises(round_module.RoundPlanError, match="platform scope"):
+        round_module.plan_round(
+            workflow=workflow,
+            segment_id="seg_001",
+            decision=decision,
+            batch=batch,
+            previous_query_plans=[previous_plans],
+        )
 
 
 def test_workflow_normalizes_optional_segment_and_query_plan_ids(
@@ -291,7 +417,10 @@ def test_external_collector_normalization_matches_in_process_contracts(
     semvideo_workspace = tmp_path / "semvideo"
     material_workspace.mkdir()
     semvideo_workspace.mkdir()
-    collector_value = shutil.which("material-collector")
+    collector_value = shutil.which(
+        "material-collector",
+        path=str(Path(sys.executable).parent),
+    )
     assert collector_value is not None
     expected = module.initialize(
         input_path=input_path,
@@ -326,7 +455,161 @@ def test_external_collector_normalization_matches_in_process_contracts(
     )
 
 
-def test_workflow_requires_every_expression_to_target_all_platforms(
+def test_in_process_workflow_reports_old_queryplans_as_version_incompatible(
+    tmp_path: Path,
+) -> None:
+    module = _load_script("init_workflow")
+    input_path, plans_path = _semantic_contracts(tmp_path)
+    plans = json.loads(plans_path.read_text(encoding="utf-8"))
+    plans["schema_version"] = "1.0"
+    _write_json(plans_path, plans)
+    material_workspace = tmp_path / "materials"
+    semvideo_workspace = tmp_path / "semvideo"
+    material_workspace.mkdir()
+    semvideo_workspace.mkdir()
+
+    with pytest.raises(module.WorkflowInitError) as raised:
+        module.initialize(
+            input_path=input_path,
+            query_plans_path=plans_path,
+            workflow_root=tmp_path / "workflow",
+            material_workspace=material_workspace,
+            semvideo_workspace=semvideo_workspace,
+            semvideo_profile="default",
+            max_rounds=3,
+            max_videos=18,
+        )
+
+    assert raised.value.code == "contract_version_unsupported"
+    assert raised.value.details == {
+        "document": "query_plans",
+        "received_version": "1.0",
+        "supported_versions": ["2.0"],
+    }
+
+
+def test_workflow_cli_preserves_external_contract_version_error(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = _load_script("init_workflow")
+    input_path, plans_path = _semantic_contracts(tmp_path)
+    plans = json.loads(plans_path.read_text(encoding="utf-8"))
+    plans["schema_version"] = "1.0"
+    _write_json(plans_path, plans)
+    material_workspace = tmp_path / "materials"
+    semvideo_workspace = tmp_path / "semvideo"
+    material_workspace.mkdir()
+    semvideo_workspace.mkdir()
+    collector_value = shutil.which(
+        "material-collector",
+        path=str(Path(sys.executable).parent),
+    )
+    assert collector_value is not None
+
+    return_code = module.main(
+        [
+            "--input",
+            str(input_path),
+            "--query-plans",
+            str(plans_path),
+            "--workflow-root",
+            str(tmp_path / "workflow"),
+            "--material-workspace",
+            str(material_workspace),
+            "--semvideo-workspace",
+            str(semvideo_workspace),
+            "--collector",
+            collector_value,
+        ]
+    )
+
+    assert return_code == 2
+    payload = json.loads(capsys.readouterr().err)
+    assert payload["code"] == "contract_version_unsupported"
+    assert payload["details"] == {
+        "document": "query_plans",
+        "received_version": "1.0",
+        "supported_versions": ["2.0"],
+    }
+
+
+def test_round_cli_reports_frozen_old_queryplans_as_version_incompatible(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    init_module = _load_script("init_workflow")
+    round_module = _load_script("plan_round")
+    input_path, plans_path = _semantic_contracts(tmp_path)
+    material_workspace = tmp_path / "materials"
+    semvideo_workspace = tmp_path / "semvideo"
+    material_workspace.mkdir()
+    semvideo_workspace.mkdir()
+    workflow_root = tmp_path / "workflow"
+    workflow = init_module.initialize(
+        input_path=input_path,
+        query_plans_path=plans_path,
+        workflow_root=workflow_root,
+        material_workspace=material_workspace,
+        semvideo_workspace=semvideo_workspace,
+        semvideo_profile="default",
+        max_rounds=3,
+        max_videos=18,
+    )
+    frozen_plans_path = Path(
+        workflow["semantic_input"]["initial_query_plans_path"]
+    )
+    frozen_plans = json.loads(frozen_plans_path.read_text(encoding="utf-8"))
+    frozen_plans["schema_version"] = "1.0"
+    _write_json(frozen_plans_path, frozen_plans)
+    workflow["semantic_input"]["initial_query_plans_sha256"] = hashlib.sha256(
+        round_module._canonical_bytes(frozen_plans)
+    ).hexdigest()
+    workflow_path = workflow_root / "workflow.json"
+    _write_json(workflow_path, workflow)
+
+    return_code = round_module.main(
+        [
+            "--workflow",
+            str(workflow_path),
+            "--segment-id",
+            "seg_001",
+            "--output-dir",
+            str(tmp_path / "round"),
+        ]
+    )
+
+    assert return_code == 2
+    payload = json.loads(capsys.readouterr().err)
+    assert payload["code"] == "contract_version_unsupported"
+    assert payload["details"] == {
+        "document": "query_plans",
+        "received_version": "1.0",
+        "supported_versions": ["2.0"],
+    }
+
+
+def test_round_history_reports_old_queryplans_as_version_incompatible() -> None:
+    module = _load_script("plan_round")
+
+    with pytest.raises(module.RoundPlanError) as raised:
+        module._query_history(
+            [{"schema_version": "1.0"}],
+            segment_id="seg_001",
+            query_plan_id="qp_seg_001",
+            expected_rounds=1,
+            platform_scope=["bilibili"],
+        )
+
+    assert raised.value.code == "contract_version_unsupported"
+    assert raised.value.details == {
+        "document": "query_plans",
+        "received_version": "1.0",
+        "supported_versions": ["2.0"],
+    }
+
+
+def test_workflow_requires_every_expression_to_target_the_complete_scope(
     tmp_path: Path,
 ) -> None:
     module = _load_script("init_workflow")
@@ -359,7 +642,7 @@ def test_workflow_requires_every_expression_to_target_all_platforms(
     material_workspace.mkdir()
     semvideo_workspace.mkdir()
 
-    with pytest.raises(module.WorkflowInitError, match="every query expression"):
+    with pytest.raises(module.WorkflowInitError, match="complete collection platform scope"):
         module.initialize(
             input_path=input_path,
             query_plans_path=plans_path,
@@ -453,11 +736,12 @@ def test_gap_round_rejects_a_query_used_in_an_earlier_round(tmp_path: Path) -> N
         ],
     }
     batch = {
-        "schema_version": "video-material-understanding-batch/v1",
+        "schema_version": "video-material-understanding-batch/v2",
         "workflow_id": workflow["workflow_id"],
         "workflow_state_version": workflow["state_version"],
         "segment_id": "seg_001",
         "query_plan_id": "qp_seg_001",
+        "platform_scope": ["bilibili", "douyin", "xiaohongshu"],
         "budget": {"occupied_media_unit_count": 6},
     }
     _initial, _round_input, previous_plans = round_module.plan_round(
@@ -541,11 +825,12 @@ def test_gap_round_rejects_tampered_selection_evidence(tmp_path: Path) -> None:
         ],
     }
     batch = {
-        "schema_version": "video-material-understanding-batch/v1",
+        "schema_version": "video-material-understanding-batch/v2",
         "workflow_id": workflow["workflow_id"],
         "workflow_state_version": workflow["state_version"],
         "segment_id": "seg_001",
         "query_plan_id": "qp_seg_001",
+        "platform_scope": ["bilibili", "douyin", "xiaohongshu"],
         "budget": {"occupied_media_unit_count": 6},
     }
 
@@ -566,9 +851,10 @@ def _manifest(
     units: list[dict[str, Any]],
 ) -> dict[str, Any]:
     return {
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "session_id": session_id,
         "workspace_path": str(workspace),
+        "platform_scope": ["bilibili"],
         "session_status": "integration_required",
         "state_version": 7,
         "generated_at": "2026-07-31T00:00:00Z",
@@ -696,6 +982,7 @@ def test_prepare_batch_counts_fallback_but_deduplicates_understanding_by_hash(
         workflow_state_version=1,
         segment_id="seg_001",
         query_plan_id="qp_seg_001",
+        platform_scope=["bilibili"],
         material_workspace=workspace,
         semvideo_workspace=tmp_path,
     )
@@ -709,6 +996,58 @@ def test_prepare_batch_counts_fallback_but_deduplicates_understanding_by_hash(
         "bilibili:reused",
     ]
     assert len(batch["items"][0]["sources"]) == 2
+
+
+def test_prepare_batch_rejects_platform_scope_changes_between_rounds(
+    tmp_path: Path,
+) -> None:
+    module = _load_script("prepare_understanding_batch")
+    workspace = tmp_path / "materials"
+    workspace.mkdir()
+    first_path = tmp_path / "result-1.json"
+    second_path = tmp_path / "result-2.json"
+    _write_json(first_path, _manifest(workspace, session_id="ses_1", units=[]))
+    second = _manifest(workspace, session_id="ses_2", units=[])
+    second["platform_scope"] = ["bilibili", "douyin"]
+    _write_json(second_path, second)
+
+    with pytest.raises(module.BatchError, match="does not match"):
+        module.build_batch(
+            [first_path, second_path],
+            profile="default",
+            workflow_id="vmw_test",
+            workflow_state_version=1,
+            segment_id="seg_001",
+            query_plan_id="qp_seg_001",
+            platform_scope=["bilibili"],
+            material_workspace=workspace,
+            semvideo_workspace=tmp_path,
+        )
+
+
+def test_prepare_batch_rejects_candidate_outside_workflow_scope(
+    tmp_path: Path,
+) -> None:
+    module = _load_script("prepare_understanding_batch")
+    workspace = tmp_path / "materials"
+    workspace.mkdir()
+    result_path = tmp_path / "result.json"
+    result = _manifest(workspace, session_id="ses_1", units=[])
+    result["candidates"][0]["platform"] = "douyin"
+    _write_json(result_path, result)
+
+    with pytest.raises(module.BatchError, match="candidate.*outside"):
+        module.build_batch(
+            [result_path],
+            profile="default",
+            workflow_id="vmw_test",
+            workflow_state_version=1,
+            segment_id="seg_001",
+            query_plan_id="qp_seg_001",
+            platform_scope=["bilibili"],
+            material_workspace=workspace,
+            semvideo_workspace=tmp_path,
+        )
 
 
 def test_prepare_batch_rejects_collection_from_another_workspace(
@@ -748,6 +1087,7 @@ def test_prepare_batch_rejects_collection_from_another_workspace(
             workflow_state_version=1,
             segment_id="seg_001",
             query_plan_id="qp_seg_001",
+            platform_scope=["bilibili"],
             material_workspace=expected_workspace,
             semvideo_workspace=tmp_path,
         )
@@ -759,11 +1099,12 @@ def test_collect_semvideo_catalog_reads_all_pages_and_full_records(
 ) -> None:
     module = _load_script("collect_semvideo_catalog")
     batch = {
-        "schema_version": "video-material-understanding-batch/v1",
+        "schema_version": "video-material-understanding-batch/v2",
         "workflow_id": "vmw_test",
         "workflow_state_version": 1,
         "segment_id": "seg_001",
         "query_plan_id": "qp_seg_001",
+        "platform_scope": ["bilibili"],
         "material_workspace": str(tmp_path),
         "semvideo_workspace": str(tmp_path),
         "items": [
@@ -872,7 +1213,8 @@ def test_collect_semvideo_catalog_reads_all_pages_and_full_records(
 def test_record_understanding_job_is_idempotent_and_rejects_rebinding() -> None:
     module = _load_script("record_understanding_job")
     batch = {
-        "schema_version": "video-material-understanding-batch/v1",
+        "schema_version": "video-material-understanding-batch/v2",
+        "platform_scope": ["bilibili"],
         "items": [
             {
                 "item_id": "proxy_1",
@@ -911,7 +1253,8 @@ def test_record_understanding_job_is_idempotent_and_rejects_rebinding() -> None:
 def test_understanding_jobs_carry_forward_only_matching_batch_identity() -> None:
     module = _load_script("record_understanding_job")
     batch = {
-        "schema_version": "video-material-understanding-batch/v1",
+        "schema_version": "video-material-understanding-batch/v2",
+        "platform_scope": ["bilibili"],
         "items": [
             {
                 "item_id": "proxy_1",

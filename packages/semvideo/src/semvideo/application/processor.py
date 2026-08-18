@@ -6,10 +6,11 @@ import html
 import json
 import os
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -22,12 +23,13 @@ from semvideo.adapters.ffmpeg import (
     VideoStreamFacts,
 )
 from semvideo.adapters.llm import OpenAICompatibleLlm, parse_json_content
-from semvideo.application.artifacts import artifact_record
 from semvideo.application.analysis_media import (
     AnalysisProxyPolicy,
     prepare_analysis_media,
 )
+from semvideo.application.artifacts import artifact_record
 from semvideo.application.cinematography import call_cinematography_model
+from semvideo.application.execution_config import FrozenExecutionConfig
 from semvideo.application.model_runs import aggregate_usage, write_model_run
 from semvideo.application.progress import ProgressSink, stage_progress
 from semvideo.application.range_export import (
@@ -37,7 +39,7 @@ from semvideo.application.range_export import (
 from semvideo.application.source_store import resolve_source, sha256_file
 from semvideo.application.task_store import TaskStore, new_opaque_id, utc_now
 from semvideo.application.workspace import WorkspacePaths
-from semvideo.config import WorkspaceConfig, load_workspace_config
+from semvideo.config import WorkspaceConfig
 from semvideo.errors import ErrorCategory, RecoveryAction, SemvideoError
 from semvideo.infrastructure.io import (
     atomic_write_bytes,
@@ -50,16 +52,6 @@ from semvideo.infrastructure.locks import (
     ResourceLimits,
     ResourceLockManager,
 )
-from semvideo.modules.evidence import (
-    ContactSheet,
-    EvidenceFrame,
-    EvidencePolicy,
-    EvidenceTimeline,
-    FasterWhisperConfig,
-    FasterWhisperTranscriber,
-    NativeEvidenceAdapter,
-)
-from semvideo.modules.evidence.models import DedupDecision
 from semvideo.modules.cinematography import (
     CinematographyAnnotation,
     CinematographyEvidence,
@@ -73,10 +65,26 @@ from semvideo.modules.cinematography import (
 from semvideo.modules.cinematography.prompt import (
     PROMPT_VERSION as CINEMATOGRAPHY_PROMPT_VERSION,
 )
+from semvideo.modules.evidence import (
+    ContactSheet,
+    EvidenceFrame,
+    EvidencePolicy,
+    EvidenceTimeline,
+    FasterWhisperConfig,
+    FasterWhisperTranscriber,
+    NativeEvidenceAdapter,
+)
+from semvideo.modules.evidence.models import DedupDecision
 from semvideo.modules.media import (
     CandidateBoundary as MediaCandidateBoundary,
+)
+from semvideo.modules.media import (
     CandidateSegment as MediaCandidateSegment,
+)
+from semvideo.modules.media import (
     CandidateTimeline as MediaCandidateTimeline,
+)
+from semvideo.modules.media import (
     MediaAnalyzer,
     TranscriptSpan,
 )
@@ -169,8 +177,7 @@ def _checkpoint_outputs_intact(
     if (
         not checkpoint
         or checkpoint.get("status") != "succeeded"
-        or checkpoint.get("implementation_version")
-        != _PIPELINE_IMPLEMENTATION_VERSION
+        or checkpoint.get("implementation_version") != _PIPELINE_IMPLEMENTATION_VERSION
         or checkpoint.get("config_hash") != config_hash
     ):
         return False
@@ -316,9 +323,7 @@ def _media_timeline_from_dict(value: dict[str, Any]) -> MediaCandidateTimeline:
             )
             for row in value["boundaries"]
         ),
-        segments=tuple(
-            MediaCandidateSegment(**row) for row in value["segments"]
-        ),
+        segments=tuple(MediaCandidateSegment(**row) for row in value["segments"]),
     )
 
 
@@ -397,9 +402,7 @@ def _grid_rows(
     *,
     job_root: Path,
 ) -> list[dict[str, Any]]:
-    frame_by_id = {
-        frame.evidence_frame_id: frame for frame in evidence.frames
-    }
+    frame_by_id = {frame.evidence_frame_id: frame for frame in evidence.frames}
     rows: list[dict[str, Any]] = []
     for sheet in evidence.contact_sheets:
         cells = [
@@ -414,9 +417,7 @@ def _grid_rows(
             {
                 "schema_version": 1,
                 "grid_id": sheet.contact_sheet_id,
-                "path": (
-                    Path("evidence") / sheet.relative_path
-                ).as_posix(),
+                "path": (Path("evidence") / sheet.relative_path).as_posix(),
                 "cells": cells,
                 "start_ms": cells[0]["timestamp_ms"],
                 "end_ms": cells[-1]["timestamp_ms"],
@@ -599,9 +600,7 @@ def _segment_artifacts(
     windows: list[dict[str, Any]],
 ) -> dict[str, Any]:
     in_range = [
-        frame
-        for frame in evidence.frames
-        if start_ms <= frame.timestamp_ms < end_ms
+        frame for frame in evidence.frames if start_ms <= frame.timestamp_ms < end_ms
     ]
     nearest = min(
         in_range or list(evidence.frames),
@@ -626,9 +625,7 @@ def _inspection_html(
     summaries: list[dict[str, Any]],
 ) -> str:
     cards: list[str] = []
-    summary_by_id = {
-        str(row["final_segment_id"]): row for row in summaries
-    }
+    summary_by_id = {str(row["final_segment_id"]): row for row in summaries}
     for record in records:
         summary = summary_by_id[record.segment_id]
         video = (
@@ -649,13 +646,13 @@ def _inspection_html(
         )
     grids = "".join(
         f'<figure><img loading="lazy" src="../{html.escape(str(row["path"]))}">'
-        f'<figcaption>{html.escape(str(row["grid_id"]))} · '
-        f'{row["start_ms"] / 1000:.3f}s–{row["end_ms"] / 1000:.3f}s</figcaption></figure>'
+        f"<figcaption>{html.escape(str(row['grid_id']))} · "
+        f"{row['start_ms'] / 1000:.3f}s–{row['end_ms'] / 1000:.3f}s</figcaption></figure>"
         for row in windows
     )
     return (
-        "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\">"
-        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        '<!doctype html><html lang="zh-CN"><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
         f"<title>Semvideo {html.escape(job_id)}</title>"
         "<style>body{font:16px/1.6 system-ui;max-width:1000px;margin:auto;padding:24px}"
         "article{border:1px solid #ddd;border-radius:12px;padding:16px;margin:16px 0}"
@@ -679,9 +676,7 @@ def _dependency_error(stage: str, exc: BaseException) -> SemvideoError:
         details["returncode"] = exc.returncode
         details["stderr_tail"] = exc.stderr[-2000:]
     invalid_input = (
-        stage == "probe"
-        and isinstance(exc, FfmpegError)
-        and exc.returncode is not None
+        stage == "probe" and isinstance(exc, FfmpegError) and exc.returncode is not None
     ) or (
         isinstance(exc, FfmpegError)
         and any(
@@ -695,16 +690,8 @@ def _dependency_error(stage: str, exc: BaseException) -> SemvideoError:
         )
     )
     return SemvideoError(
-        code=(
-            "media_input_invalid"
-            if invalid_input
-            else f"{stage}_dependency_failed"
-        ),
-        category=(
-            ErrorCategory.INPUT
-            if invalid_input
-            else ErrorCategory.DEPENDENCY
-        ),
+        code=("media_input_invalid" if invalid_input else f"{stage}_dependency_failed"),
+        category=(ErrorCategory.INPUT if invalid_input else ErrorCategory.DEPENDENCY),
         message=(
             "输入文件不是可解码且带有效视频轨的视频。"
             if invalid_input
@@ -729,8 +716,9 @@ def run_job(
 
     job = store.read_job(job_id)
     job_root = store.job_path(job_id)
-    config = load_workspace_config(workspace.data)
-    config_hash = canonical_hash(config.model_dump(mode="json"))
+    frozen_config = FrozenExecutionConfig.from_job(job, attempt_id=attempt_id)
+    config = frozen_config.config
+    config_hash = frozen_config.config_hash
     first_invalid_model_stage = next(
         (
             model_stage
@@ -859,9 +847,7 @@ def run_job(
         raise _dependency_error("probe", exc) from exc
 
     candidate_path = job_root / "segmentation" / "candidate-timeline.json"
-    media_candidate_path = (
-        job_root / "segmentation" / "media-candidate-timeline.json"
-    )
+    media_candidate_path = job_root / "segmentation" / "media-candidate-timeline.json"
     shot_timeline_path = job_root / "segmentation" / "shot-timeline.json"
     anchors_path = job_root / "segmentation" / "semantic-anchors.json"
     _begin_stage(
@@ -1043,8 +1029,7 @@ def run_job(
                 },
             )
             evidence_artifacts = [
-                job_root / "evidence" / frame.relative_path
-                for frame in evidence.frames
+                job_root / "evidence" / frame.relative_path for frame in evidence.frames
             ] + [
                 job_root / "evidence" / sheet.relative_path
                 for sheet in evidence.contact_sheets
@@ -1065,9 +1050,7 @@ def run_job(
     cinematography_evidence_path = (
         job_root / "evidence" / "cinematography" / "index.json"
     )
-    cinematography_path = (
-        job_root / "semantics" / "cinematography-annotations.jsonl"
-    )
+    cinematography_path = job_root / "semantics" / "cinematography-annotations.jsonl"
     _begin_stage(
         store,
         job_id,
@@ -1106,9 +1089,7 @@ def run_job(
                     shot_timeline,
                     ffmpeg=ffmpeg,
                     policy=ShotEvidencePolicy(
-                        frames_per_second=(
-                            config.cinematography.frames_per_second
-                        ),
+                        frames_per_second=(config.cinematography.frames_per_second),
                         minimum_frames_per_shot=(
                             config.cinematography.minimum_frames_per_shot
                         ),
@@ -1122,9 +1103,7 @@ def run_job(
                 cinematography_evidence.model_dump(mode="json"),
             )
             evidence_frame_ids = {
-                bundle.shot_id: [
-                    frame.frame_id for frame in bundle.frames
-                ]
+                bundle.shot_id: [frame.frame_id for frame in bundle.frames]
                 for bundle in cinematography_evidence.shots
             }
             cinematography_rows: list[dict[str, Any]] = []
@@ -1141,9 +1120,7 @@ def run_job(
                     attempt_id,
                     "cinematography",
                 )
-                batch = cinematography_evidence.shots[
-                    offset : offset + batch_size
-                ]
+                batch = cinematography_evidence.shots[offset : offset + batch_size]
                 required_shot_ids = [bundle.shot_id for bundle in batch]
                 messages = cinematography_messages(
                     batch,
@@ -1156,8 +1133,7 @@ def run_job(
                     {
                         "shot_timeline": shot_timeline.model_dump(mode="json"),
                         "evidence": [
-                            bundle.model_dump(mode="json")
-                            for bundle in batch
+                            bundle.model_dump(mode="json") for bundle in batch
                         ],
                     }
                 )
@@ -1170,21 +1146,19 @@ def run_job(
                         attempt_id=attempt_id,
                         stage="cinematography",
                     ):
-                        batch_response, model_result = (
-                            call_cinematography_model(
-                                config,
-                                messages,
-                                timeline=shot_timeline,
-                                evidence_frame_ids=evidence_frame_ids,
-                                required_shot_ids=required_shot_ids,
-                                cooldown_path=(
-                                    workspace.provider_cooldowns
-                                    / (
-                                        f"{config.llm.provider}-"
-                                        f"{canonical_hash(config.llm.model)[7:23]}.json"
-                                    )
-                                ),
-                            )
+                        batch_response, model_result = call_cinematography_model(
+                            config,
+                            messages,
+                            timeline=shot_timeline,
+                            evidence_frame_ids=evidence_frame_ids,
+                            required_shot_ids=required_shot_ids,
+                            cooldown_path=(
+                                workspace.provider_cooldowns
+                                / (
+                                    f"{config.llm.provider}-"
+                                    f"{canonical_hash(config.llm.model)[7:23]}.json"
+                                )
+                            ),
                         )
                 except SemvideoError as error:
                     write_model_run(
@@ -1197,12 +1171,8 @@ def run_job(
                         input_hash=model_input_hash,
                         status="failed",
                         started_at=started_at,
-                        duration_ms=round(
-                            (time.monotonic() - started) * 1000
-                        ),
-                        attempts=list(
-                            getattr(error, "model_attempts", [])
-                        ),
+                        duration_ms=round((time.monotonic() - started) * 1000),
+                        attempts=list(getattr(error, "model_attempts", [])),
                         repair_attempted=bool(
                             getattr(error, "repair_attempted", False)
                         ),
@@ -1219,13 +1189,9 @@ def run_job(
                     input_hash=model_input_hash,
                     status="succeeded",
                     started_at=started_at,
-                    duration_ms=round(
-                        (time.monotonic() - started) * 1000
-                    ),
+                    duration_ms=round((time.monotonic() - started) * 1000),
                     attempts=list(model_result.get("attempts", [])),
-                    repair_attempted=bool(
-                        model_result.get("repair_attempted", False)
-                    ),
+                    repair_attempted=bool(model_result.get("repair_attempted", False)),
                 )
                 model_outputs.extend(
                     [model_artifacts.run_path, model_artifacts.raw_path]
@@ -1352,9 +1318,7 @@ def run_job(
         messages = segmentation_messages(
             anchors=anchors,
             grids=grid_rows,
-            transcript_spans=[
-                span.to_dict() for span in evidence.transcript_spans
-            ],
+            transcript_spans=[span.to_dict() for span in evidence.transcript_spans],
             job_root=job_root,
         )
         started = time.monotonic()
@@ -1365,9 +1329,7 @@ def run_job(
                 "anchors": anchors,
                 "windows": window_rows,
                 "grids": grid_rows,
-                "transcript": [
-                    span.to_dict() for span in evidence.transcript_spans
-                ],
+                "transcript": [span.to_dict() for span in evidence.transcript_spans],
             }
         )
         try:
@@ -1401,9 +1363,7 @@ def run_job(
                 started_at=started_at,
                 duration_ms=round((time.monotonic() - started) * 1000),
                 attempts=list(getattr(error, "model_attempts", [])),
-                repair_attempted=bool(
-                    getattr(error, "repair_attempted", False)
-                ),
+                repair_attempted=bool(getattr(error, "repair_attempted", False)),
                 failure=error.as_dict(),
             )
             raise
@@ -1419,9 +1379,7 @@ def run_job(
             started_at=started_at,
             duration_ms=round((time.monotonic() - started) * 1000),
             attempts=list(model_result.get("attempts", [])),
-            repair_attempted=bool(
-                model_result.get("repair_attempted", False)
-            ),
+            repair_attempted=bool(model_result.get("repair_attempted", False)),
         )
         run_path = model_artifacts.run_path
         raw_response_path = model_artifacts.raw_path
@@ -1430,12 +1388,8 @@ def run_job(
             model_run_id=model_run_id,
             response=response,
             anchors=anchors,
-            evidence_frames=[
-                frame.to_dict() for frame in evidence.frames
-            ],
-            transcript_spans=[
-                span.to_dict() for span in evidence.transcript_spans
-            ],
+            evidence_frames=[frame.to_dict() for frame in evidence.frames],
+            transcript_spans=[span.to_dict() for span in evidence.transcript_spans],
         )
         _write_jsonl(proposal_path, [proposal_row])
         _complete_stage(
@@ -1569,17 +1523,15 @@ def run_job(
                 source_video_id=str(job["source_video_id"]),
                 final_segment=asdict(final_segment),
                 summary=summary,
-                transcript_spans=[
-                    span.to_dict() for span in evidence.transcript_spans
-                ],
+                transcript_spans=[span.to_dict() for span in evidence.transcript_spans],
                 profile=str(job["profile"]),
                 profile_version=1,
                 merge_plan_hash=plan_hash,
                 artifacts=_segment_artifacts(
                     start_ms=final_segment.start_ms,
                     end_ms=final_segment.end_ms,
-                evidence=evidence,
-                windows=grid_rows,
+                    evidence=evidence,
+                    windows=grid_rows,
                 ),
             )
             for final_segment, summary in zip(plan.final_segments, summaries)
@@ -1640,15 +1592,9 @@ def run_job(
                             audio_codec=config.render.audio_codec,
                             audio_bitrate=config.render.audio_bitrate,
                         )
-                    record.artifacts.video = (
-                        Path("renders") / output.name
-                    ).as_posix()
+                    record.artifacts.video = (Path("renders") / output.name).as_posix()
                     render_outputs.append(output)
-                    sidecar = (
-                        job_root
-                        / "renders"
-                        / f"{record.segment_id}.export.json"
-                    )
+                    sidecar = job_root / "renders" / f"{record.segment_id}.export.json"
                     atomic_write_json(
                         sidecar,
                         {
@@ -1746,10 +1692,7 @@ def run_job(
         artifact_record(
             job_root,
             job_root / contact_sheet_path,
-            (
-                f"cinematography_contact_sheet_{bundle.shot_id}_"
-                f"{sheet_index:02d}"
-            ),
+            (f"cinematography_contact_sheet_{bundle.shot_id}_{sheet_index:02d}"),
         )
         for bundle in cinematography_evidence.shots
         for sheet_index, contact_sheet_path in enumerate(
@@ -1805,9 +1748,9 @@ def run_job(
             "schema_version": 1,
         },
         "cinematography_records": {
-            "artifact_id": artifact_by_kind[
-                "cinematography_annotations"
-            ]["artifact_id"],
+            "artifact_id": artifact_by_kind["cinematography_annotations"][
+                "artifact_id"
+            ],
             "path": "semantics/cinematography-annotations.jsonl",
             "count": len(cinematography_rows),
             "schema_version": 1,
@@ -1816,9 +1759,7 @@ def run_job(
         "report_artifact_id": artifact_by_kind["inspection_report"]["artifact_id"],
         "manifest": "manifest.json",
         "report": "reports/inspection.html",
-        "renders": [
-            path.relative_to(job_root).as_posix() for path in render_outputs
-        ],
+        "renders": [path.relative_to(job_root).as_posix() for path in render_outputs],
     }
     manifest_artifact_hash = canonical_hash(manifest)[7:31]
     result["manifest_artifact_id"] = f"artifact_{manifest_artifact_hash}"
@@ -1869,13 +1810,10 @@ def export_segment(
     source, _ = resolve_source(workspace, str(job["source_video_id"]))
     destination = output.expanduser().resolve()
     registered_output = (
-        job_root / record.artifacts.video
-        if record.artifacts.video
-        else None
+        job_root / record.artifacts.video if record.artifacts.video else None
     )
     if destination.is_relative_to(job_root.resolve()) and (
-        registered_output is None
-        or destination != registered_output.resolve()
+        registered_output is None or destination != registered_output.resolve()
     ):
         raise SemvideoError(
             code="segment_export_destination_inside_job",
@@ -1898,9 +1836,7 @@ def export_segment(
             RegisteredTaskMedia(
                 relative_path=record.artifacts.video,
                 invalid_code="registered_segment_artifact_invalid",
-                invalid_message=(
-                    "正式片段已登记的视频产物缺失或哈希不一致。"
-                ),
+                invalid_message=("正式片段已登记的视频产物缺失或哈希不一致。"),
                 entity_id=segment_id,
                 job_id=job_id,
             )
@@ -1942,9 +1878,7 @@ def export_shot(
             recovery=RecoveryAction.RETRY_SAME,
             exit_code=2,
         )
-    timeline = ShotTimeline.model_validate(
-        read_versioned_json(timeline_path)
-    )
+    timeline = ShotTimeline.model_validate(read_versioned_json(timeline_path))
     shot = next(
         (row for row in timeline.shots if row.shot_id == shot_id),
         None,

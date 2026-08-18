@@ -30,6 +30,36 @@ CLI 只是应用服务适配层，不能自行实现查询规划、预算、下�
 
 第一阶段可执行文件名为 `material-collector`。
 
+### 版本与作者契约
+
+```text
+material-collector version
+material-collector contracts schema
+```
+
+两个命令均为无状态、只读接口，不创建会话、不读取或写入素材工作区。
+
+`version` 输出：
+
+```json
+{
+  "schema_version": "material-collector-version/v1",
+  "cli_version": "0.2.0",
+  "skill_protocol_version": 1,
+  "collection_input_schema": {"min": "1.0", "max": "1.0"},
+  "query_plans_schema": {"min": "2.0", "max": "2.0"}
+}
+```
+
+随 Skill 发布的解析器只接受 CLI 版本、Skill 协议和两个输入范围全部相同的工具；
+不兼容时返回结构化安装恢复动作，不通过读取源码或反复试命令猜测兼容性。
+
+`contracts schema` 返回 `schema_version=material-collector-contract-schemas/v1`、
+`status=available`，以及 `contracts.collection_input` 和 `contracts.query_plans` 两个由
+Pydantic 草稿输入模型直接生成的 JSON Schema。它们必须与 Skill 内随版本发布的
+Schema 快照逐对象相等。该命令只用于有界协议诊断；Agent 正常作者流程直接读取 Skill
+快照和示例，不用它反复探测字段。
+
 ### 契约规范化
 
 ```text
@@ -40,12 +70,59 @@ material-collector contracts normalize --input <path> --query-plans <path>
 警告，不创建会话、不写素材工作区。下游总编排必须使用该结果计算冻结哈希，避免在
 Skill 中复制文本规范化、安全 ID、引用和去重规则。
 
+### Collector 自有执行器
+
+```text
+material-collector executor invoke \
+  --operation run|resume|status|cancel \
+  [--collector-path <absolute-command>] \
+  --workspace <path> \
+  [--input <path>] \
+  [--query-plans <path>] \
+  [--session-id <id>] \
+  [--request-timeout-seconds <seconds>] \
+  [--max-rounds <n>] \
+  [--max-videos <n>] \
+  [--browser-channel auto|edge|chrome] \
+  [--show-search-browsers] \
+  [--progress-format jsonl|text] \
+  [--control-directory <path>]
+```
+
+- `run` 必须提供 `--input` 和 `--query-plans`；`resume|status|cancel` 必须提供
+  `--session-id`。`--browser-channel` 只在 `run` 生效，`--show-search-browsers` 只在
+  `run|resume` 生效。为保留各宿主薄适配器的统一调用形状，命令可以接受
+  其他操作不使用的已声明选项；这些值通过基础类型/范围校验后被忽略，不传给
+  子命令。未声明选项、操作必需字段缺失或非法值在启动子进程前返回
+  结构化错误。发布 Skill 的黄金路径只传入对当前操作有意义的值。
+- `--collector-path` 指定执行器要启动的同版本 Collector 子命令；省略时使用
+  当前 Python 环境中的 Collector。发布 Skill 在 Windows 上通过自己的薄适配器
+  把已验证的绝对命令同时固定为 executor 和 child；PowerShell 参数不属于
+  本 CLI 命令面。
+- `run|resume` 成功启动时，stdout 仅返回一个 `schema_version=1.0`、
+  `status=started` 的 JSON，并包含 `operation`、包装进程 `process_id`、真实子进程
+  `collector_process_id`、`session_id`、`stdout_path`、`stderr_path` 和
+  `control_path`。`started` 只表示子进程与会话握手成功，不表示采集完成。
+- `status|cancel` 不建立后台控制记录，而是同步转发子命令的唯一最终 JSON
+  和退出码。
+- 每个 session 同时只允许一个 `resume` 执行器；不同新 `run` 可以在同一
+  素材工作区并存。控制记录保存 PID 与 OS 进程启动标识，中断恢复不会
+  把复用 PID 误认为旧执行器。取消和恢复仍以会话 runtime 租约为权威。
+- 执行器 stdout 始终只有一个版本化 JSON，执行器自身 stderr 保持为空；
+  采集子进程输出进入记录的 stdout/stderr 文件。参数错误返回 `40`，
+  活执行器冲突与启动/恢复失败返回 `30`，不可恢复内部错误返回 `50`。
+  错误至少包含 `status=error`、`error.code` 和安全的结构化细节；调用方不得
+  在失败后发明第二套进程控制。
+
+执行器所有权、薄 Shell 适配器边界与不接受 Skill 自建进程管理的决策见
+[`0006-collector-owns-background-execution.md`](../adr/0006-collector-owns-background-execution.md)。
+
 ### 会话生命周期
 
 ```text
-material-collector run --workspace <path> --input <path> --query-plans <path> [--max-rounds <n>] [--max-videos <n>] [--auth-profile <id>] [--auth-wait-seconds <seconds>] [--request-timeout-seconds <seconds>] [--progress-format jsonl|text]
+material-collector run --workspace <path> --input <path> --query-plans <path> [--max-rounds <n>] [--max-videos <n>] [--auth-profile <id>] [--browser-channel auto|edge|chrome] [--show-search-browsers] [--auth-wait-seconds <seconds>] [--request-timeout-seconds <seconds>] [--progress-format jsonl|text]
 material-collector status --workspace <path> --session-id <id>
-material-collector resume --workspace <path> --session-id <id> [--progress-format jsonl|text]
+material-collector resume --workspace <path> --session-id <id> [--show-search-browsers] [--progress-format jsonl|text]
 material-collector cancel --workspace <path> --session-id <id>
 material-collector sessions list --workspace <path>
 ```
@@ -56,14 +133,22 @@ material-collector sessions list --workspace <path>
 - QueryPlan 字段、平台覆盖和核心规则边界以 `docs/design/query-plan-contract.md` 为准。
 - `max_rounds` 与 `max_videos` 通过运行参数或稳定配置提供，并将生效值固化进会话。
 - `--auth-profile` 选择操作系统用户持有的本机认证配置，默认值为 `default`；会话只固化该标识，不复制凭据或本机浏览器目录。
+- `--browser-channel` 默认值为 `auto`。Windows 原生执行按 Edge、Chrome 顺序选择；
+  显式 `edge` 或 `chrome` 不跨通道回退。首次成功通道固化进会话，`resume` 只复用该
+  通道。非 Windows 与 Docker 执行把 `auto` 固定解析为 Chrome。
 - `--auth-wait-seconds` 配置有头登录等待时间，默认值为 `600`；生效值固化进会话，`resume` 不临时改变它。
 - `--request-timeout-seconds` 配置单个平台网络请求的等待上限，默认值为 `30`；
   生效值固化进会话，`resume` 始终继续使用冻结值，不能临时覆盖。
-  会话数据库 schema `2` 新增该字段；schema `1` 会话在只读查询时按 `30` 展示，
-  首次恢复执行时原地迁移并冻结该兼容值。
+  会话数据库 schema `2` 新增该字段；schema `3` 新增请求和已选浏览器通道。
+  本次破坏性版本不迁移较早会话；旧 schema 返回明确的不兼容结果。
 - `run` 和 `resume` 的 `--progress-format` 只控制当前 CLI 进程写入 `stderr`
   的进度表现形式，不属于业务约束，也不固化进会话；默认值为 `jsonl`，
   `text` 用于人类直接观察。
+- 搜索默认隐藏；`--show-search-browsers` 只显示当前执行中每个在范围平台的可识别
+  窗口，不固化进会话，也不改变已冻结浏览器通道。多平台仍并发执行。
+- 关闭可见搜索窗口返回该平台的 `search_browser_closed`，等待其他并发平台到达安全
+  提交点后中断当前执行；已提交结果保留，未完成操作由后续显式 `resume` 重试。同一
+  执行绝不因窗口关闭而切换为 headless。
 - 外部视频理解和落库决策文件的 schema 尚未提供，第一版 `resume` 只恢复内部阶段；
   `--decision` 保留到接口冻结后实现，当前不会静默接收未知决策文件。
 - `sessions list` 只扫描指定素材工作区，不依赖或创建应用级全局索引。
@@ -78,15 +163,15 @@ material-collector sessions list --workspace <path>
 ### 登录态
 
 ```text
-material-collector auth status --auth-profile <id> --platform <platform>
-material-collector auth login --auth-profile <id> --platform <platform> [--auth-wait-seconds <seconds>]
-material-collector auth logout --auth-profile <id> --platform <platform> --confirm <platform>
+material-collector auth status --auth-profile <id> --platform <platform> [--browser-channel edge|chrome]
+material-collector auth login --auth-profile <id> --platform <platform> [--browser-channel auto|edge|chrome] [--auth-wait-seconds <seconds>]
+material-collector auth logout --auth-profile <id> --platform <platform> --confirm <platform> [--browser-channel edge|chrome]
 ```
 
 - `auth status` 和 `auth login` 不要求 `--workspace`，因为本机认证配置属于操作系统用户并可跨素材工作区复用。
 - `--auth-profile` 默认值为 `default`。
 - `auth status` 使用平台只读认证探针，并以结构化字段返回 `valid`、`invalid`、`challenge_required` 或 `probe_failed`；不得仅凭 Cookie 是否存在判断。
-- `run` 和 `resume` 在每轮多平台并发搜索前预检全部目标平台；任一登录态不可用时，当前命令自动打开有头 Chrome 等待人工登录，通过验证后直接继续，无需用户另行调用认证命令。
+- `run` 和 `resume` 在每轮多平台并发搜索前预检全部目标平台；任一登录态不可用时，当前命令自动打开所选通道的有头浏览器等待人工登录，通过验证后直接继续，无需用户另行调用认证命令。
 - 多个平台需要登录时固定按 `Bilibili → 抖音 → 小红书` 串行处理，一次只打开一个有头浏览器。
 - 认证进度至少包含 `authentication_probe_started`、
   `authentication_probe_completed`、`authentication_login_window_opened`、
@@ -100,7 +185,7 @@ material-collector auth logout --auth-profile <id> --platform <platform> --confi
 - 预检通过后若平台返回 `authentication_lost`，当前命令等待其他平台到达安全提交点，自动重新认证一次并只补跑该平台未完成请求；同一平台同一轮再次失效时才持久化为 `auth_required`。
 - `auth login` 仅用于在采集任务之外主动更新本机认证配置，不是正常搜索流程的必需步骤。
 - 登录默认等待 `600` 秒。无桌面、浏览器被关闭或达到等待上限时，本次有头浏览器关闭且会话持久化为 `auth_required`；调用方随后只需执行 `resume`，由恢复流程再次自动预检和打开浏览器。
-- 任何需要打开浏览器配置的命令都要取得“认证配置标识 + 平台”跨进程锁；第二个进程最多等待 `60` 秒。
+- 任何需要打开浏览器配置的命令都要取得“认证配置标识 + 浏览器通道 + 平台”跨进程锁；第二个进程最多等待 `60` 秒。
 - 等待锁超时返回错误码 `auth_profile_busy` 和退出码 `30`。会话状态保持在原业务阶段，不增加轮次、不占用视频名额，也不允许通过删除磁盘锁文件抢占。
 - 会话状态和输出只记录认证配置标识、平台、规范化探针状态及验证时间；账号、昵称、Cookie 和探针原始响应不得进入日志或产物。
 - 同一认证配置切换到另一个有效账号不形成会话阻塞，第一阶段不冻结或比较平台账号身份。
@@ -161,5 +246,10 @@ material-collector media fetch-hq --workspace <path> --session-id <id> --media-u
 
 - `cancel` 成功提交并确认取消请求时返回 `0`；正在运行的 `run` 或 `resume` 观察到该请求并正常停止时返回 `21`。
 - `auth_profile_busy` 属于退出码 `30` 的可恢复技术错误；会话调用方可以稍后执行 `resume`，独立认证命令可以直接重试。
+- `browser_channel_failed` 和 `browser_channel_exhausted` 属于退出码 `30`；错误尝试只含
+  通道、`unavailable|launch|navigation|desktop|window_verification` 阶段、规范化原因和
+  所需动作，不输出浏览器路径或启动命令。
+- `search_browser_closed` 属于退出码 `30`，调用方可重新执行 `resume`；是否再次显示
+  搜索窗口由新的执行参数决定，而不是会话状态。
 - 具体业务状态和错误细节始终以最终 JSON 的 `status`、`action_required` 和结构化 `error` 为准。
 - 新增退出码不得改变已冻结数字的含义。

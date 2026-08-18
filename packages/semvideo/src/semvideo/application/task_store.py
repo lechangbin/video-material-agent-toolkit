@@ -33,9 +33,7 @@ _RUNNING_STATES = frozenset(
 _KNOWN_STATES = _RUNNING_STATES | frozenset(
     {"created", "completed", "failed", "cancelled", "interrupted"}
 )
-_TERMINAL_STATES = frozenset(
-    {"completed", "failed", "cancelled", "interrupted"}
-)
+_TERMINAL_STATES = frozenset({"completed", "failed", "cancelled", "interrupted"})
 _JOB_DIRECTORIES = (
     "logs",
     "stages",
@@ -131,6 +129,8 @@ class TaskStore:
         job_id: str | None = None,
         request: Mapping[str, Any] | None = None,
         idempotency_key: str | None = None,
+        execution_config: Mapping[str, Any] | None = None,
+        execution_config_hash: str | None = None,
     ) -> dict[str, Any]:
         """Create a task package in the ``created`` state."""
 
@@ -156,6 +156,13 @@ class TaskStore:
             "request": dict(request or {}),
             "created_at": created_at,
         }
+        if execution_config is not None or execution_config_hash is not None:
+            if execution_config is None or not execution_config_hash:
+                raise ValueError(
+                    "execution_config and execution_config_hash must be provided together"
+                )
+            job["execution_config"] = dict(execution_config)
+            job["execution_config_hash"] = execution_config_hash
         state = {
             "schema_version": TASK_SCHEMA_VERSION,
             "job_id": job_id,
@@ -258,7 +265,9 @@ class TaskStore:
             reserved = set(snapshot)
             overlap = reserved.intersection(extra)
             if overlap:
-                raise ValueError(f"extra state fields overlap reserved fields: {overlap}")
+                raise ValueError(
+                    f"extra state fields overlap reserved fields: {overlap}"
+                )
             snapshot.update(extra)
         atomic_write_json(path / "state.json", snapshot)
         self.append_event(
@@ -403,9 +412,7 @@ class TaskStore:
         _validate_component(stage, "stage")
         if expected_attempt_id is not None:
             _validate_component(expected_attempt_id, "expected attempt ID")
-            current_attempt = _read_task_json(path / "state.json").get(
-                "attempt_id"
-            )
+            current_attempt = _read_task_json(path / "state.json").get("attempt_id")
             if current_attempt != expected_attempt_id:
                 raise StaleAttemptError(
                     f"attempt {expected_attempt_id} cannot checkpoint "
@@ -426,11 +433,7 @@ class TaskStore:
         path = self._require_job(job_id)
         _validate_component(stage, "stage")
         checkpoint_path = path / "stages" / stage / "checkpoint.json"
-        return (
-            _read_task_json(checkpoint_path)
-            if checkpoint_path.is_file()
-            else None
-        )
+        return _read_task_json(checkpoint_path) if checkpoint_path.is_file() else None
 
     def invalidate_checkpoint(self, job_id: str, stage: str) -> dict[str, Any] | None:
         checkpoint = self.read_checkpoint(job_id, stage)
@@ -451,8 +454,7 @@ class TaskStore:
         current_state = self.read_state(job_id).get("state")
         if current_state in _TERMINAL_STATES:
             raise ValueError(
-                f"cannot request cancellation for terminal state "
-                f"{current_state!r}"
+                f"cannot request cancellation for terminal state {current_state!r}"
             )
         request = {
             "schema_version": TASK_SCHEMA_VERSION,
@@ -471,11 +473,7 @@ class TaskStore:
 
     def read_cancel_request(self, job_id: str) -> dict[str, Any] | None:
         request_path = self._require_job(job_id) / "cancel.request"
-        return (
-            _read_task_json(request_path)
-            if request_path.is_file()
-            else None
-        )
+        return _read_task_json(request_path) if request_path.is_file() else None
 
     def cancel_requested(self, job_id: str) -> bool:
         return (self._require_job(job_id) / "cancel.request").is_file()
