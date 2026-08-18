@@ -117,6 +117,7 @@ class AuthenticationLoginTimeoutError(AuthenticationError):
                 "auth_profile": auth_profile,
                 "wait_seconds": wait_seconds,
                 "reason_code": reason_code,
+                "required_action": _login_required_action(reason_code),
             },
         )
 
@@ -197,6 +198,14 @@ class BrowserLoginTimeoutError(RuntimeError):
     def __init__(self, reason_code: str = "login_wait_expired") -> None:
         super().__init__(reason_code)
         self.reason_code = _safe_reason_code(reason_code)
+
+
+def _login_required_action(reason_code: str) -> str:
+    if reason_code == "login_window_closed":
+        return "rerun_and_keep_login_window_open"
+    if reason_code == "platform_challenge":
+        return "complete_platform_challenge_in_visible_browser"
+    return "complete_login_in_visible_browser"
 
 
 @dataclass(frozen=True, slots=True)

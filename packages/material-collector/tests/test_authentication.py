@@ -1193,6 +1193,189 @@ async def test_xiaohongshu_unknown_rendered_406_enters_visible_login(
     ]
 
 
+async def test_xiaohongshu_real_headed_login_accepts_rendered_profile_after_406(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    launches: list[dict[str, object]] = []
+    events: list[str] = []
+    rendered_checks = 0
+
+    class FakeResponse:
+        status = 406
+        ok = False
+
+    class FakePage:
+        async def goto(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+
+        async def bring_to_front(self) -> None:
+            return None
+
+        async def evaluate(self, expression: str) -> dict[str, bool]:
+            nonlocal rendered_checks
+            assert "/user/profile/" in expression
+            rendered_checks += 1
+            return {
+                "profile_me_visible": rendered_checks >= 2,
+                "captcha_prompt": False,
+                "login_container_visible": False,
+            }
+
+    class FakeContext:
+        request: FakeContext
+
+        def __init__(self) -> None:
+            self.pages = [FakePage()]
+            self.request = self
+
+        async def get(self, _url: str, *, timeout: int) -> FakeResponse:
+            assert timeout == 15_000
+            return FakeResponse()
+
+        async def close(self) -> None:
+            return None
+
+    class FakeChromium:
+        async def launch_persistent_context(
+            self,
+            user_data_dir: str,
+            **kwargs: object,
+        ) -> FakeContext:
+            del user_data_dir
+            launches.append(kwargs)
+            return FakeContext()
+
+    class FakePlaywrightManager:
+        async def __aenter__(self) -> SimpleNamespace:
+            return SimpleNamespace(chromium=FakeChromium())
+
+        async def __aexit__(self, *args: object) -> None:
+            del args
+
+    monkeypatch.setattr(
+        "material_collector.infrastructure.authentication.async_playwright",
+        FakePlaywrightManager,
+    )
+    monkeypatch.setattr(
+        "material_collector.infrastructure.authentication.asyncio.sleep",
+        AsyncMock(),
+    )
+    driver = PlaywrightBrowserAuthenticationDriver(
+        channel=BrowserChannel.CHROME,
+        desktop_verifier=lambda _path, _started_at: True,
+    )
+
+    result = await driver.login(
+        Platform.XIAOHONGSHU,
+        tmp_path,
+        30,
+        lambda event, _details: events.append(event),
+    )
+
+    assert result == DriverProbe(AuthStatus.VALID, "platform_reports_logged_in")
+    assert rendered_checks == 2
+    assert launches[0]["channel"] == "chrome"
+    assert launches[0]["headless"] is False
+    assert events[:3] == [
+        "authentication_login_window_opening",
+        "authentication_login_window_opened",
+        "authentication_login_waiting",
+    ]
+
+
+async def test_xiaohongshu_real_headed_login_times_out_on_persistent_406(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    clock = 0.0
+
+    class FakeResponse:
+        status = 406
+        ok = False
+
+    class FakePage:
+        async def goto(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+
+        async def bring_to_front(self) -> None:
+            return None
+
+        async def evaluate(self, expression: str) -> dict[str, bool]:
+            assert "/user/profile/" in expression
+            return {
+                "profile_me_visible": False,
+                "captcha_prompt": False,
+                "login_container_visible": False,
+            }
+
+    class FakeContext:
+        request: FakeContext
+
+        def __init__(self) -> None:
+            self.pages = [FakePage()]
+            self.request = self
+
+        async def get(self, _url: str, *, timeout: int) -> FakeResponse:
+            assert timeout == 15_000
+            return FakeResponse()
+
+        async def close(self) -> None:
+            return None
+
+    class FakeChromium:
+        async def launch_persistent_context(
+            self,
+            user_data_dir: str,
+            **kwargs: object,
+        ) -> FakeContext:
+            del user_data_dir, kwargs
+            return FakeContext()
+
+    class FakePlaywrightManager:
+        async def __aenter__(self) -> SimpleNamespace:
+            return SimpleNamespace(chromium=FakeChromium())
+
+        async def __aexit__(self, *args: object) -> None:
+            del args
+
+    async def advance(seconds: float) -> None:
+        nonlocal clock
+        clock += seconds
+
+    monkeypatch.setattr(
+        "material_collector.infrastructure.authentication.async_playwright",
+        FakePlaywrightManager,
+    )
+    monkeypatch.setattr(
+        "material_collector.infrastructure.authentication.time.monotonic",
+        lambda: clock,
+    )
+    monkeypatch.setattr(
+        "material_collector.infrastructure.authentication.asyncio.sleep",
+        advance,
+    )
+    driver = PlaywrightBrowserAuthenticationDriver(
+        desktop_verifier=lambda _path, _started_at: True,
+    )
+
+    with pytest.raises(BrowserLoginTimeoutError) as captured:
+        await driver.login(
+            Platform.XIAOHONGSHU,
+            tmp_path,
+            2,
+            lambda event, _details: events.append(event),
+        )
+
+    assert captured.value.reason_code == "interactive_login_required"
+    assert events[:3] == [
+        "authentication_login_window_opening",
+        "authentication_login_window_opened",
+        "authentication_login_waiting",
+    ]
+
+
 async def test_xiaohongshu_persistent_406_ambiguity_reports_login_timeout(
     tmp_path: Path,
 ) -> None:
@@ -1239,6 +1422,10 @@ async def test_xiaohongshu_persistent_406_ambiguity_reports_login_timeout(
     assert captured.value.code == "auth_login_timeout"
     assert captured.value.details["reason_code"] == "interactive_login_required"
     assert captured.value.details["platform"] == "xiaohongshu"
+    assert (
+        captured.value.details["required_action"]
+        == "complete_login_in_visible_browser"
+    )
 
 
 async def test_xiaohongshu_captcha_is_not_accepted_as_logged_in() -> None:
