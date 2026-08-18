@@ -15,6 +15,7 @@ from typer.testing import CliRunner
 from material_collector.adapters.cli import app as cli_module
 from material_collector.adapters.cli.app import app
 from material_collector.application.sessions import (
+    SESSION_SCHEMA_VERSION,
     CreateSessionRequest,
     RuntimeConstraints,
     SessionApplication,
@@ -318,7 +319,14 @@ def test_run_and_status_preserve_a_bilibili_only_platform_scope(
     write_json(plans_path, scoped_query_plan_document("bilibili"))
 
     class FakeWorkflow:
-        async def run(self, workspace: Path, session_id: str) -> WorkflowResult:
+        async def run(
+            self,
+            workspace: Path,
+            session_id: str,
+            *,
+            show_search_browsers: bool = False,
+        ) -> WorkflowResult:
+            assert show_search_browsers is False
             return WorkflowResult(
                 session_id=session_id,
                 workspace_path=str(workspace.resolve()),
@@ -420,7 +428,7 @@ def test_status_rejects_an_old_session_without_mutating_it(
         "details": {
             "session_id": session.session_id,
             "received_version": 2,
-            "supported_versions": [3],
+            "supported_versions": [SESSION_SCHEMA_VERSION],
         },
     }
     assert database.is_file()

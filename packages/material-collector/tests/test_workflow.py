@@ -631,7 +631,7 @@ async def test_workflow_resume_reuses_frozen_channel_instead_of_auto(
 async def test_visible_search_close_retains_commits_and_resume_replays_only_unfinished(
     tmp_path: Path,
 ) -> None:
-    workspace, session_id = _create_session(tmp_path, add_bilibili_query=True)
+    workspace, session_id = _create_session(tmp_path, add_second_query=True)
 
     class ClosingSearch(_Platform):
         def __init__(self) -> None:

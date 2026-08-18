@@ -11,4 +11,3 @@
 
 The profile is the Docker default seccomp policy with the user-namespace permissions recommended
 by Playwright for sandboxed Chromium. It is included unchanged.
-

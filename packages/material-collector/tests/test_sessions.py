@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from material_collector.application.sessions import (
+    SESSION_SCHEMA_VERSION,
     CreateSessionRequest,
     RuntimeConstraints,
     SessionApplication,
@@ -244,7 +245,10 @@ def test_create_session_freezes_documents_and_initializes_sqlite(
     assert json.loads(input_snapshot.read_text(encoding="utf-8"))["schema_version"] == "1.0"
     with sqlite3.connect(session_dir / "session.sqlite3") as connection:
         assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert (
+            connection.execute("PRAGMA user_version").fetchone()[0]
+            == SESSION_SCHEMA_VERSION
+        )
 
 
 def test_session_freezes_the_first_successful_browser_channel(tmp_path: Path) -> None:
@@ -366,7 +370,7 @@ def test_version_one_session_is_rejected_without_migration(
     assert captured.value.details == {
         "session_id": created.session_id,
         "received_version": 1,
-        "supported_versions": [3],
+        "supported_versions": [SESSION_SCHEMA_VERSION],
     }
     with sqlite3.connect(database) as connection:
         assert connection.execute(

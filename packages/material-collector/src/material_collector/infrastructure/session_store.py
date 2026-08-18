@@ -226,7 +226,7 @@ class SqliteSessionStore:
             with closing(_connect_read_only(database_path)) as connection:
                 _verify_database(connection, session_id)
                 row = connection.execute(
-                    f"""
+                    """
                     SELECT
                         session_id,
                         status,
