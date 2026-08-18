@@ -37,7 +37,7 @@ Agent 会从仓库根目录执行：
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap-agent.ps1
 ```
 
-该入口会检测并安装缺失的 Python 3.14、uv、Node.js、Chrome 和 FFmpeg，从最新 GitHub
+该入口会检测并安装缺失的 Python 3.14、uv、Node.js、Edge/Chrome 浏览器通道和 FFmpeg，从最新 GitHub
 Release 下载并校验两个 wheel，然后通过 `npx skills` 给受支持的 Agent 安装全部四个
 Skills。它不会写入 API Key，也不会代替用户完成平台扫码登录。
 
@@ -132,6 +132,8 @@ winget install --id Gyan.FFmpeg --exact
 Windows 原生模式默认使用 `--browser-channel auto`，按 Microsoft Edge、Google Chrome
 的顺序选择本机浏览器；系统已有 Edge 时无需额外安装 Chrome。若要固定 Chrome，可另行
 执行 `winget install --id Google.Chrome --exact` 并传入 `--browser-channel chrome`。
+首次安装也可向 `bootstrap-agent.ps1` 传入 `-BrowserChannel auto|edge|chrome`；默认 `auto`
+不会在 Edge 可用时要求安装 Chrome。
 
 重新打开 PowerShell，确认：
 

@@ -26,9 +26,9 @@ material-collector result export
 material-collector media fetch-hq
 ```
 
-`run` 会冻结输入，检查三平台登录态；Windows 原生模式默认先尝试 Edge、再尝试
+`run` 会冻结输入，只检查 QueryPlans 2.0 范围内的平台登录态；Windows 原生模式默认先尝试 Edge、再尝试
 Chrome，需要登录时打开所选浏览器的有头窗口，随后固定使用同一通道的无头浏览器
-并发搜索 Bilibili、抖音和小红书，解析媒体单元并下载低码率
+并发搜索范围内的 Bilibili、抖音和/或小红书，解析媒体单元并下载低码率
 代理。低码率代理选择源站最高且不超过 720p 的版本，并在落地后通过本地
 `ffprobe` 再次校验实际分辨率。跨平台版本会分别下载，再由本地音频与视频指纹确认
 同作品并按 `Bilibili > 抖音 > 小红书` 标记主来源；其他版本仍完整保留。全部发现

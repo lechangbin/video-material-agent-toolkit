@@ -2,6 +2,7 @@
 param(
     [string]$Repository = 'lechangbin/video-material-agent-toolkit',
     [string]$ReleaseTag = 'latest',
+    [string]$BrowserChannel = 'auto',
     [string[]]$Agents = @('*'),
     [string[]]$AdditionalSkillsDirectory = @(),
     [switch]$SkipSystemDependencies,
@@ -55,17 +56,50 @@ function Resolve-Python314 {
     return $null
 }
 
-function Test-ChromeAvailable {
-    if (Test-CommandAvailable 'chrome.exe') {
+function Test-BrowserChannel {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('edge', 'chrome')]
+        [string]$Channel
+    )
+
+    $commandName = if ($Channel -eq 'edge') { 'msedge.exe' } else { 'chrome.exe' }
+    if (Test-CommandAvailable $commandName) {
         return $true
     }
 
-    $chromeCandidates = @(
-        (Join-Path $env:ProgramFiles 'Google\Chrome\Application\chrome.exe')
-        (Join-Path ${env:ProgramFiles(x86)} 'Google\Chrome\Application\chrome.exe')
-        (Join-Path $env:LOCALAPPDATA 'Google\Chrome\Application\chrome.exe')
+    $relativePath = if ($Channel -eq 'edge') {
+        'Microsoft\Edge\Application\msedge.exe'
+    }
+    else {
+        'Google\Chrome\Application\chrome.exe'
+    }
+    $roots = @(
+        $env:ProgramFiles,
+        ${env:ProgramFiles(x86)},
+        $env:LOCALAPPDATA
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    return $null -ne (
+        $roots |
+            ForEach-Object { Join-Path $_ $relativePath } |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+            Select-Object -First 1
     )
-    return $null -ne ($chromeCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1)
+}
+
+function Resolve-BrowserChannel {
+    if ($BrowserChannel -eq 'auto') {
+        foreach ($candidate in @('edge', 'chrome')) {
+            if (Test-BrowserChannel -Channel $candidate) {
+                return $candidate
+            }
+        }
+        return $null
+    }
+    if (Test-BrowserChannel -Channel $BrowserChannel) {
+        return $BrowserChannel
+    }
+    return $null
 }
 
 function Get-MissingDependencies {
@@ -81,8 +115,14 @@ function Get-MissingDependencies {
         (-not (Test-CommandAvailable 'npx.cmd') -and -not (Test-CommandAvailable 'npx.exe'))) {
         $missing.Add([pscustomobject]@{ name = 'node'; package = 'OpenJS.NodeJS.LTS' })
     }
-    if (-not (Test-ChromeAvailable)) {
-        $missing.Add([pscustomobject]@{ name = 'chrome'; package = 'Google.Chrome' })
+    if ($null -eq (Resolve-BrowserChannel)) {
+        $browserDependency = if ($BrowserChannel -eq 'chrome') {
+            [pscustomobject]@{ name = 'chrome'; package = 'Google.Chrome' }
+        }
+        else {
+            [pscustomobject]@{ name = 'edge'; package = 'Microsoft.Edge' }
+        }
+        $missing.Add($browserDependency)
     }
     if (-not (Test-CommandAvailable 'ffmpeg.exe') -or -not (Test-CommandAvailable 'ffprobe.exe')) {
         $missing.Add([pscustomobject]@{ name = 'ffmpeg'; package = 'Gyan.FFmpeg' })
@@ -116,18 +156,25 @@ function Copy-SkillsToDirectory {
 }
 
 try {
+    $BrowserChannel = $BrowserChannel.ToLowerInvariant()
+    if (@('auto', 'edge', 'chrome') -notcontains $BrowserChannel) {
+        throw 'BrowserChannel must be auto, edge, or chrome.'
+    }
     if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
         throw 'The automated bootstrap currently supports Windows x64 only.'
     }
 
     Refresh-ProcessPath
     $missingDependencies = @(Get-MissingDependencies)
+    $resolvedBrowserChannel = Resolve-BrowserChannel
 
     if ($CheckOnly) {
         [ordered]@{
             schema_version = 1
             status = if ($missingDependencies.Count -eq 0) { 'ready' } else { 'missing_dependencies' }
             missing_dependencies = @($missingDependencies | Select-Object -ExpandProperty name)
+            browser_channel_requested = $BrowserChannel
+            browser_channel_resolved = $resolvedBrowserChannel
             repository = $Repository
         } | ConvertTo-Json -Depth 4
         exit 0
@@ -190,7 +237,8 @@ try {
         $installerOutput = @(
             & (Join-Path $PSScriptRoot 'install-tools.ps1') `
                 -ReleaseDirectory $temporaryReleaseDirectory `
-                -PythonExecutable $pythonExecutable
+                -PythonExecutable $pythonExecutable `
+                -BrowserChannel $BrowserChannel
         )
         if ($LASTEXITCODE -ne 0) {
             throw 'CLI tool installation failed.'
@@ -232,6 +280,13 @@ try {
         release_tag = $resolvedReleaseTag
         system_packages_installed = @($installedPackages)
         cli_tools = $toolInstallResult
+        browser_channel_requested = $BrowserChannel
+        browser_channel_resolved = if ($null -ne $toolInstallResult) {
+            $toolInstallResult.browser_channel_resolved
+        }
+        else {
+            Resolve-BrowserChannel
+        }
         skills = [ordered]@{
             status = $skillInstallStatus
             agents = @($Agents)

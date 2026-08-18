@@ -9,8 +9,9 @@ import re
 import socket
 from collections.abc import AsyncIterator, Iterable, Mapping
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, cast
 from urllib.parse import urljoin
 
 import httpcore
@@ -50,6 +51,14 @@ _SHORT_CHAIN_SUFFIXES: Mapping[Platform, tuple[str, ...]] = {
     Platform.XIAOHONGSHU: ("xhslink.com", "xiaohongshu.com"),
 }
 _CaptureTimeoutPhase = Literal["warmup", "navigation", "response"]
+_SearchContextKey = tuple[str, BrowserChannel, Platform, bool]
+
+
+@dataclass(slots=True)
+class _SharedSearchContext:
+    manager: Any
+    browser: BrowserContext
+    closed_by_user: bool = False
 
 
 class HostResolver(Protocol):
@@ -174,6 +183,9 @@ class PlaywrightPlatformTransport:
         self._resolver = resolver or _system_resolver
         self._http_transport = http_transport
         self._network_backend = network_backend or httpcore.AnyIOBackend()
+        self._search_contexts: dict[_SearchContextKey, _SharedSearchContext] = {}
+        self._search_locks: dict[_SearchContextKey, asyncio.Lock] = {}
+        self._active_search_keys: set[_SearchContextKey] = set()
 
     def _operation_transport(
         self,
@@ -238,6 +250,79 @@ class PlaywrightPlatformTransport:
             finally:
                 await browser.close()
 
+    @asynccontextmanager
+    async def search_execution(
+        self,
+        platforms: tuple[Platform, ...],
+        context: PlatformContext,
+    ) -> AsyncIterator[None]:
+        keys = (
+            {
+                self._search_context_key(platform, context)
+                for platform in platforms
+            }
+            if context.show_search_browser
+            else set()
+        )
+        self._active_search_keys.update(keys)
+        try:
+            yield
+        finally:
+            for platform in platforms:
+                await self.reset_search_platform(platform, context)
+            self._active_search_keys.difference_update(keys)
+
+    async def reset_search_platform(
+        self,
+        platform: Platform,
+        context: PlatformContext,
+    ) -> None:
+        key = self._search_context_key(platform, context)
+        lock = self._search_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            shared = self._search_contexts.pop(key, None)
+            if shared is not None:
+                await shared.manager.__aexit__(None, None, None)
+
+    def _search_context_key(
+        self,
+        platform: Platform,
+        context: PlatformContext,
+    ) -> _SearchContextKey:
+        return (
+            context.auth_profile,
+            context.browser_channel,
+            platform,
+            context.show_search_browser,
+        )
+
+    @asynccontextmanager
+    async def _open_search_context(
+        self,
+        platform: Platform,
+        context: PlatformContext,
+    ) -> AsyncIterator[_SharedSearchContext]:
+        key = self._search_context_key(platform, context)
+        lock = self._search_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            shared = self._search_contexts.get(key)
+            if shared is None:
+                manager = (
+                    self._open_context(platform, context, visible=True)
+                    if context.show_search_browser
+                    else self._open_context(platform, context)
+                )
+                browser = await manager.__aenter__()
+                shared = _SharedSearchContext(manager=manager, browser=browser)
+                on_event = getattr(browser, "on", None)
+                if callable(on_event):
+                    on_event(
+                        "close",
+                        lambda *_args: setattr(shared, "closed_by_user", True),
+                    )
+                self._search_contexts[key] = shared
+        yield shared
+
     async def capture_json(
         self,
         page_url: str,
@@ -250,15 +335,37 @@ class PlaywrightPlatformTransport:
         timeout_ms = context.request_timeout_seconds * 1000
         timeout_phase: _CaptureTimeoutPhase = "navigation"
         page: Any | None = None
+        shared_search_context: _SharedSearchContext | None = None
         search_browser_closed = False
         visible = operation == "search" and context.show_search_browser
         try:
-            browser_context = (
-                self._open_context(platform, context, visible=True)
-                if visible
-                else self._open_context(platform, context)
-            )
-            async with browser_context as browser:
+            search_key = self._search_context_key(platform, context)
+            browser_context: Any
+            if operation == "search" and search_key in self._active_search_keys:
+                browser_context = self._open_search_context(
+                    platform,
+                    context,
+                )
+            else:
+                browser_context = (
+                    self._open_context(platform, context, visible=True)
+                    if visible
+                    else self._open_context(platform, context)
+                )
+            async with browser_context as opened_context:
+                if operation == "search" and search_key in self._active_search_keys:
+                    shared_search_context = cast(_SharedSearchContext, opened_context)
+                    if shared_search_context.closed_by_user:
+                        raise PlatformAdapterError(
+                            "search_browser_closed",
+                            "The visible search browser was closed.",
+                            platform=platform,
+                            operation=operation,
+                            retryable=True,
+                        )
+                    browser = shared_search_context.browser
+                else:
+                    browser = opened_context
                 page = await browser.new_page()
                 if visible:
                     await _identify_visible_search_page(page, platform)
@@ -266,6 +373,8 @@ class PlaywrightPlatformTransport:
                     def mark_search_browser_closed(_page: Any) -> None:
                         nonlocal search_browser_closed
                         search_browser_closed = True
+                        if shared_search_context is not None:
+                            shared_search_context.closed_by_user = True
 
                     page.on("close", mark_search_browser_closed)
                 try:
@@ -328,6 +437,16 @@ class PlaywrightPlatformTransport:
         except Exception as exc:
             if visible and page is not None and (
                 search_browser_closed or page.is_closed()
+            ):
+                raise PlatformAdapterError(
+                    "search_browser_closed",
+                    "The visible search browser was closed.",
+                    platform=platform,
+                    operation=operation,
+                    retryable=True,
+                ) from exc
+            if visible and shared_search_context is not None and (
+                shared_search_context.closed_by_user
             ):
                 raise PlatformAdapterError(
                     "search_browser_closed",

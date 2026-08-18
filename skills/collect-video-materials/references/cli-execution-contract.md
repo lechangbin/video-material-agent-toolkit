@@ -12,15 +12,37 @@ material-collector executor invoke \
   --input <collection-input.json> \
   --query-plans <query-plans.json> \
   --request-timeout-seconds 30 \
+  --browser-channel auto \
   --progress-format jsonl \
   --max-rounds 3 \
   --max-videos 18
 ```
 
-Use `--operation resume` with `--session-id`, and omit run-only inputs. Use `status` and `cancel`
-with `--workspace` and `--session-id`. The interface writes exactly one versioned JSON object to
+Resume, inspect, and cancel with these complete commands:
+
+```text
+material-collector executor invoke \
+  --operation resume \
+  --workspace <material-workspace> \
+  --session-id <session-id> \
+  --progress-format jsonl
+
+material-collector executor invoke \
+  --operation status \
+  --workspace <material-workspace> \
+  --session-id <session-id>
+
+material-collector executor invoke \
+  --operation cancel \
+  --workspace <material-workspace> \
+  --session-id <session-id>
+```
+
+The interface writes exactly one versioned JSON object to
 stdout and keeps stderr empty. Its start, duplicate-executor, monitoring, cancellation, and
 interrupted-recovery semantics are identical on Windows and non-Windows hosts.
+Pass `--browser-channel auto|edge|chrome` only for a new run. Add `--show-search-browsers` to a
+run or resume only when the user explicitly requests visible search windows.
 
 ## Windows adapter
 
@@ -34,6 +56,8 @@ $invoke = @{
     InputPath = "<collection-input.json>"
     QueryPlansPath = "<query-plans.json>"
     RequestTimeoutSeconds = 30
+    BrowserChannel = "auto"
+    ShowSearchBrowsers = $false
     ProgressFormat = "jsonl"
     MaxRounds = 3
     MaxVideos = 18
@@ -43,6 +67,15 @@ $invoke = @{
 
 For resume, use `Operation="resume"` and `SessionId="<session-id>"`; omit `InputPath`,
 `QueryPlansPath`, `RequestTimeoutSeconds`, `MaxRounds`, and `MaxVideos`.
+
+```powershell
+& $runner -Operation resume -Workspace "<material-workspace>" `
+    -SessionId "<session-id>" -ProgressFormat jsonl
+& $runner -Operation status -Workspace "<material-workspace>" `
+    -SessionId "<session-id>"
+& $runner -Operation cancel -Workspace "<material-workspace>" `
+    -SessionId "<session-id>"
+```
 
 `MaxRounds` and `MaxVideos` are positive integer strings passed only for `run`.
 They define the per-session Collector constraints. A downstream orchestration
@@ -103,6 +136,7 @@ executor or replaces final stdout and runner-managed `status`.
 - `progress_format_invalid`: pass `jsonl` or `text`.
 - `max_rounds_invalid`: pass a positive integer for a new `run`.
 - `max_videos_invalid`: pass a positive integer for a new `run`.
+- `browser_channel_invalid`: pass `auto`, `edge`, or `chrome` for a new `run`.
 - `collector_path_invalid`: pass a non-empty executable path or omit the parameter to use the
   installed command.
 - `collector_not_found`: install the CLI with uv or pass an explicit tested `CollectorPath`;

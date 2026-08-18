@@ -9,8 +9,10 @@ from pathlib import Path
 
 import pytest
 
-SKILL_ROOT = Path(__file__).parents[3] / "skills" / "collect-video-materials"
+REPOSITORY_ROOT = Path(__file__).parents[3]
+SKILL_ROOT = REPOSITORY_ROOT / "skills" / "collect-video-materials"
 RUNNER = SKILL_ROOT / "scripts" / "invoke-collector.ps1"
+BOOTSTRAP = REPOSITORY_ROOT / "scripts" / "bootstrap-agent.ps1"
 POWERSHELL_HOSTS = [
     host for host in ("powershell", "pwsh") if shutil.which(host) is not None
 ]
@@ -23,6 +25,23 @@ def test_skill_distinguishes_partial_search_progress_from_final_status() -> None
     assert "`search_plan_settled`" in skill
     assert "as progress only, never as the final session result" in normalized
     assert "Do not issue `resume` merely because one platform" in normalized
+
+
+def test_skill_exposes_complete_inputs_and_lifecycle_commands_without_probing() -> None:
+    skill = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
+    inputs = (SKILL_ROOT / "references" / "input-contracts.md").read_text(
+        encoding="utf-8"
+    )
+    execution = (SKILL_ROOT / "references" / "cli-execution-contract.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "do not discover either contract with `--help`" in " ".join(skill.split())
+    assert '"full_script"' in inputs
+    assert '"platform_scope"' in inputs
+    assert '"target_platforms"' in inputs
+    for operation in ("run", "resume", "status", "cancel"):
+        assert f"--operation {operation}" in execution
 
 
 @pytest.mark.parametrize("powershell_host", POWERSHELL_HOSTS)
@@ -65,6 +84,16 @@ def test_skill_runner_delegates_lifecycle_to_collector_executor() -> None:
     assert "process_start_ticks" not in source
 
 
+def test_native_bootstrap_exposes_edge_first_browser_selection() -> None:
+    source = BOOTSTRAP.read_text(encoding="utf-8")
+
+    assert "[string]$BrowserChannel = 'auto'" in source
+    assert "@('auto', 'edge', 'chrome') -notcontains $BrowserChannel" in source
+    assert "foreach ($candidate in @('edge', 'chrome'))" in source
+    assert "-BrowserChannel $BrowserChannel" in source
+    assert "Test-ChromeAvailable" not in source
+
+
 @pytest.mark.parametrize(
     ("extra_arguments", "expected_code"),
     [
@@ -73,6 +102,7 @@ def test_skill_runner_delegates_lifecycle_to_collector_executor() -> None:
         (["-MaxVideos", "0"], "max_videos_invalid"),
         (["-ProgressFormat", "xml"], "progress_format_invalid"),
         (["-CollectorPath", ""], "collector_path_invalid"),
+        (["-BrowserChannel", "firefox"], "browser_channel_invalid"),
         (["-Bogus", "value"], "arguments_invalid"),
     ],
 )
@@ -109,6 +139,31 @@ def test_skill_runner_returns_json_for_invalid_script_parameters(
     assert payload["schema_version"] == "1.0"
     assert payload["status"] == "error"
     assert payload["error"]["code"] == expected_code
+
+
+@pytest.mark.parametrize("powershell_host", POWERSHELL_HOSTS)
+def test_native_bootstrap_returns_json_for_invalid_browser_channel(
+    powershell_host: str,
+) -> None:
+    completed = subprocess.run(
+        [
+            powershell_host,
+            "-NoProfile",
+            "-File",
+            str(BOOTSTRAP),
+            "-CheckOnly",
+            "-BrowserChannel",
+            "firefox",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert completed.returncode == 1
+    assert completed.stderr == ""
+    assert json.loads(completed.stdout)["status"] == "error"
 
 
 def test_skill_runner_reports_missing_collector_as_structured_error(
@@ -187,6 +242,9 @@ def test_skill_runner_starts_run_with_preserved_argument_boundaries(
             "2",
             "-MaxVideos",
             "7",
+            "-BrowserChannel",
+            "chrome",
+            "-ShowSearchBrowsers",
             "-ControlDirectory",
             str(tmp_path / "control"),
         ],
@@ -215,7 +273,7 @@ def test_skill_runner_starts_run_with_preserved_argument_boundaries(
     while time.monotonic() < deadline:
         if captured_args.exists():
             captured_lines = captured_args.read_text(encoding="utf-8").splitlines()
-            if len(captured_lines) == 16:
+            if len(captured_lines) == 19:
                 break
         time.sleep(0.05)
     assert captured_lines == [
@@ -232,6 +290,9 @@ def test_skill_runner_starts_run_with_preserved_argument_boundaries(
         "2",
         "--max-videos",
         "7",
+        "--browser-channel",
+        "chrome",
+        "--show-search-browsers",
         "--progress-format",
         "jsonl",
     ]

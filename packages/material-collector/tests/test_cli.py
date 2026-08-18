@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -25,6 +26,7 @@ from material_collector.application.workflow import (
     WorkflowResult,
     WorkflowSegmentSummary,
 )
+from material_collector.core.errors import CollectorError
 from material_collector.core.media import (
     AuthenticationSelection,
     AuthProbe,
@@ -32,6 +34,8 @@ from material_collector.core.media import (
     BrowserChannel,
     Platform,
 )
+from material_collector.infrastructure import executor as executor_module
+from material_collector.infrastructure.executor import CollectionExecutor
 from material_collector.infrastructure.session_runtime_store import SqliteSessionRuntime
 from material_collector.infrastructure.session_store import SqliteSessionStore
 
@@ -152,6 +156,9 @@ def test_executor_cli_starts_collection_without_powershell(tmp_path: Path) -> No
             str(input_path),
             "--query-plans",
             str(plans_path),
+            "--browser-channel",
+            "chrome",
+            "--show-search-browsers",
             "--control-directory",
             str(tmp_path / "control"),
         ],
@@ -187,11 +194,131 @@ def test_executor_cli_starts_collection_without_powershell(tmp_path: Path) -> No
             "3",
             "--max-videos",
             "18",
+            "--browser-channel",
+            "chrome",
+            "--show-search-browsers",
             "--progress-format",
             "jsonl",
         ]
     finally:
         terminate_execution(payload)
+
+
+def test_executor_ignores_reused_pid_with_mismatched_start_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    control_root = tmp_path / "control"
+    control_root.mkdir()
+    write_json(
+        control_root / "stale.control.json",
+        {
+            "session_id": "ses_reused",
+            "host_id": socket.gethostname(),
+            "process_id": 101,
+            "process_start_ticks": 111,
+            "collector_process_id": None,
+            "collector_process_start_ticks": None,
+        },
+    )
+    monkeypatch.setattr(executor_module, "_process_alive", lambda _process_id: True)
+    monkeypatch.setattr(executor_module, "_process_start_ticks", lambda _process_id: 222)
+
+    assert CollectionExecutor()._live_execution(control_root, "ses_reused") is None
+
+
+def test_executor_reads_current_process_start_identity() -> None:
+    assert executor_module._process_start_ticks(os.getpid()) is not None
+
+
+def test_executor_cli_recovers_past_dead_control_record(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    input_path = tmp_path / "input.json"
+    plans_path = tmp_path / "plans.json"
+    write_json(input_path, collection_document())
+    write_json(plans_path, scoped_query_plan_document("bilibili"))
+    session = SessionApplication(store=SqliteSessionStore()).create_session(
+        CreateSessionRequest(
+            workspace=workspace,
+            input_path=input_path,
+            query_plans_path=plans_path,
+        )
+    )
+    control_root = tmp_path / "control"
+    control_root.mkdir()
+    write_json(
+        control_root / "interrupted.control.json",
+        {
+            "schema_version": "1.0",
+            "session_id": session.session_id,
+            "host_id": socket.gethostname(),
+            "process_id": 999_999_991,
+            "process_start_ticks": 1,
+            "collector_process_id": 999_999_992,
+            "collector_process_start_ticks": 2,
+        },
+    )
+    fake_collector = tmp_path / "fake_collector.py"
+    fake_collector.write_text(
+        "import json, sys, time\n"
+        "if sys.argv[1] == 'status':\n"
+        "    print(json.dumps({'runtime': {'state': 'idle', 'lease_expired': True}}))\n"
+        "else:\n"
+        "    time.sleep(10)\n",
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "material_collector.adapters.cli.app",
+            "executor",
+            "invoke",
+            "--operation",
+            "resume",
+            "--collector-path",
+            str(fake_collector),
+            "--workspace",
+            str(workspace),
+            "--session-id",
+            session.session_id,
+            "--control-directory",
+            str(control_root),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert completed.returncode == 0, completed.stdout
+    payload = parse_single_json_line(completed.stdout)
+    try:
+        assert payload["status"] == "started"
+        assert payload["session_id"] == session.session_id
+        assert payload["control_path"] != str(control_root / "interrupted.control.json")
+    finally:
+        terminate_execution(payload)
+
+
+def test_executor_cli_reports_structured_browser_channel_failure() -> None:
+    result = CliRunner().invoke(
+        app,
+        [
+            "executor",
+            "invoke",
+            "--operation",
+            "run",
+            "--browser-channel",
+            "firefox",
+        ],
+    )
+
+    assert result.exit_code == 40
+    payload = parse_single_json_line(result.stdout)
+    assert payload["status"] == "error"
+    assert payload["error"]["code"] == "browser_channel_invalid"
 
 
 def test_long_running_commands_expose_progress_format_options() -> None:
@@ -207,6 +334,96 @@ def test_long_running_commands_expose_progress_format_options() -> None:
     assert resume_help.exit_code == 0
     assert "--progress-format" in resume_help.stdout
     assert "--show-search-browsers" in resume_help.stdout
+
+
+def test_resume_forwards_execution_scoped_visible_search_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    seen: list[bool] = []
+
+    class FakeWorkflow:
+        async def run(
+            self,
+            requested_workspace: Path,
+            session_id: str,
+            *,
+            show_search_browsers: bool = False,
+        ) -> WorkflowResult:
+            seen.append(show_search_browsers)
+            return WorkflowResult(
+                session_id=session_id,
+                workspace_path=str(requested_workspace),
+                platform_scope=(Platform.BILIBILI,),
+                status="completed",
+                result_path=str(requested_workspace / "collection-result.json"),
+                candidates_found=1,
+                media_units_found=1,
+                proxies_ready=1,
+                issues=(),
+                action_required=None,
+            )
+
+    monkeypatch.setattr(cli_module, "_workflow", lambda *, progress: FakeWorkflow())
+    result = CliRunner().invoke(
+        app,
+        [
+            "resume",
+            "--workspace",
+            str(workspace),
+            "--session-id",
+            "ses_visible_resume",
+            "--show-search-browsers",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert seen == [True]
+
+
+def test_resume_reports_search_browser_closed_at_public_cli_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeWorkflow:
+        async def run(
+            self,
+            workspace: Path,
+            session_id: str,
+            *,
+            show_search_browsers: bool = False,
+        ) -> WorkflowResult:
+            del workspace, session_id
+            assert show_search_browsers is True
+            raise CollectorError(
+                "search_browser_closed",
+                "The visible search browser was closed.",
+                details={
+                    "platform": "bilibili",
+                    "operation": "search",
+                    "retryable": True,
+                },
+            )
+
+    monkeypatch.setattr(cli_module, "_workflow", lambda *, progress: FakeWorkflow())
+    result = CliRunner().invoke(
+        app,
+        [
+            "resume",
+            "--workspace",
+            str(tmp_path / "workspace"),
+            "--session-id",
+            "ses_closed_window",
+            "--show-search-browsers",
+        ],
+    )
+
+    assert result.exit_code == 30
+    payload = parse_single_json_line(result.stdout)
+    assert payload["status"] == "error"
+    assert payload["error"]["code"] == "search_browser_closed"
+    assert payload["error"]["details"]["retryable"] is True
 
 
 def test_contracts_normalize_uses_the_session_creation_contracts(

@@ -15,6 +15,7 @@ from uuid import uuid4
 from material_collector.infrastructure.executor import (
     _command_environment,
     _command_with_arguments,
+    _process_start_ticks,
 )
 
 
@@ -56,7 +57,7 @@ def main() -> int:
             {
                 "process_id": child.pid,
                 "process_start_time": started_at,
-                "process_start_ticks": time.time_ns(),
+                "process_start_ticks": _process_start_ticks(child.pid),
             },
         )
         exit_code = child.wait()

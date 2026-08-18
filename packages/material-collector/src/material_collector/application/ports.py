@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from typing import Protocol
 
@@ -61,6 +62,22 @@ class SearchProvider(Protocol):
         request: SearchRequest,
         context: PlatformContext,
     ) -> SearchBatch: ...
+
+
+class SearchBrowserSessions(Protocol):
+    """Retain and close execution-scoped browser contexts used for search."""
+
+    def search_execution(
+        self,
+        platforms: tuple[Platform, ...],
+        context: PlatformContext,
+    ) -> AbstractAsyncContextManager[None]: ...
+
+    async def reset_search_platform(
+        self,
+        platform: Platform,
+        context: PlatformContext,
+    ) -> None: ...
 
 
 class SourceResolver(Protocol):

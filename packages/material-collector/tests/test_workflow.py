@@ -345,7 +345,7 @@ class _RecordingProgress:
 
 def _make_workflow(
     authentication: _Authentication,
-    adapters: dict[Platform, _Platform],
+    adapters: dict[Platform, Any],
     runtime: SessionRuntime,
     fingerprints: _FingerprintService | None = None,
     progress: _RecordingProgress | None = None,

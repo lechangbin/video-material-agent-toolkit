@@ -143,8 +143,10 @@ def _human_progress_value(value: object) -> str:
     )
 
 
-def _platform_adapters() -> dict[Platform, Any]:
-    transport = PlaywrightPlatformTransport()
+def _platform_adapters(
+    transport: PlaywrightPlatformTransport | None = None,
+) -> dict[Platform, Any]:
+    transport = transport or PlaywrightPlatformTransport()
     adapters = (
         BilibiliAdapter(transport),
         DouyinAdapter(transport),
@@ -154,7 +156,8 @@ def _platform_adapters() -> dict[Platform, Any]:
 
 
 def _workflow(*, progress: _CliProgressReporter) -> CollectionWorkflow:
-    adapters = _platform_adapters()
+    transport = PlaywrightPlatformTransport()
+    adapters = _platform_adapters(transport)
     return CollectionWorkflow(
         authentication=_authentication(),
         search_providers=adapters,
@@ -165,6 +168,7 @@ def _workflow(*, progress: _CliProgressReporter) -> CollectionWorkflow:
         manifest=_manifest_application(),
         asset_stores=WorkspaceAssetStoreFactory(),
         fingerprints=LocalMediaFingerprintService(),
+        search_browser_sessions=transport,
         progress=progress,
     )
 
@@ -365,6 +369,17 @@ def executor_invoke_command(
     ] = "30",
     max_rounds: Annotated[str, typer.Option("--max-rounds")] = "3",
     max_videos: Annotated[str, typer.Option("--max-videos")] = "18",
+    browser_channel: Annotated[
+        str,
+        typer.Option("--browser-channel", help="auto, edge, or chrome for a new run."),
+    ] = "auto",
+    show_search_browsers: Annotated[
+        bool,
+        typer.Option(
+            "--show-search-browsers",
+            help="Show platform search windows for this run or resume only.",
+        ),
+    ] = False,
     progress_format: Annotated[str, typer.Option("--progress-format")] = "jsonl",
     control_directory: Annotated[
         str | None,
@@ -383,6 +398,8 @@ def executor_invoke_command(
         request_timeout_seconds=request_timeout_seconds,
         max_rounds=max_rounds,
         max_videos=max_videos,
+        browser_channel=browser_channel,
+        show_search_browsers=show_search_browsers,
         progress_format=progress_format,
         control_directory=control_directory,
     )

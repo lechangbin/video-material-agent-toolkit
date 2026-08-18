@@ -14,8 +14,9 @@ When the user asks to install or configure this toolkit from the repository URL:
    pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap-agent.ps1
    ```
 
-3. The bootstrap script detects and, when missing, installs CPython 3.14, uv, Node.js, Chrome,
-   FFmpeg, both released CLI tools, and all repository Skills for supported Agent hosts.
+3. The bootstrap script detects and, when missing, installs CPython 3.14, uv, Node.js, the
+   selected Edge/Chrome browser channel, FFmpeg, both released CLI tools, and all repository
+   Skills for supported Agent hosts.
 4. For an Agent host that is not supported by `npx skills`, pass each of its Skills roots with
    `-AdditionalSkillsDirectory`.
 5. Treat the script's final JSON object as the authoritative result. If it reports a missing

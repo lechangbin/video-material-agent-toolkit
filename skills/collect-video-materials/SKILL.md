@@ -10,7 +10,10 @@ PowerShell launcher.
 
 ## Invoke
 
-1. Read [references/cli-execution-contract.md](references/cli-execution-contract.md).
+1. Read [references/input-contracts.md](references/input-contracts.md), then read
+   [references/cli-execution-contract.md](references/cli-execution-contract.md). These references
+   expose the complete request shapes and commands; do not discover either contract with `--help`,
+   `contracts normalize`, trial JSON, source inspection, or PATH probing.
 2. Validate that the workspace and versioned JSON inputs are explicit. QueryPlans must use
    schema 2.0, declare one non-empty `platform_scope`, and copy that complete scope into every
    expression's `target_platforms`.
@@ -37,7 +40,8 @@ continuations, or a second terminal command to replace it.
 - Allow another `run` in the same material workspace; it creates a distinct session. Never start
   a second `resume` for one session.
 - Treat `authentication_login_waiting` as a human action. Tell the user which platform needs
-  login and ask them to check Chrome in the taskbar. Keep the executor alive.
+  login and which frozen browser channel was selected, then ask them to check that Edge or Chrome
+  window in the taskbar. Keep the executor alive.
 - Treat an unchanged log as normal during human login. Never use log silence as proof of death.
 - Treat `search_plan_started`, `search_plan_committed`, and `search_plan_settled` as progress
   only, never as the final session result. `search_plan_committed` means every request in that

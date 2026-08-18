@@ -23,6 +23,7 @@ from material_collector.application.ports import (
     MediaFetcher,
     MediaFingerprintService,
     ProgressReporter,
+    SearchBrowserSessions,
     SearchProvider,
     SourceResolver,
 )
@@ -140,6 +141,7 @@ class CollectionWorkflow:
         manifest: SourceManifestApplication,
         asset_stores: AssetStoreFactory,
         fingerprints: MediaFingerprintService,
+        search_browser_sessions: SearchBrowserSessions | None = None,
         progress: ProgressReporter | None = None,
         lease_maintenance_interval_seconds: float = 5.0,
     ) -> None:
@@ -154,6 +156,7 @@ class CollectionWorkflow:
         self._manifest = manifest
         self._asset_stores = asset_stores
         self._fingerprints = fingerprints
+        self._search_browser_sessions = search_browser_sessions
         self._progress = progress
         self._lease_maintenance_interval_seconds = lease_maintenance_interval_seconds
         _require_platform_adapters(self._search_providers, "search provider")
@@ -387,6 +390,35 @@ class CollectionWorkflow:
                     f"{lease.session_id}:search:v1",
                 )
             )
+        if self._search_browser_sessions is not None:
+            async with self._search_browser_sessions.search_execution(
+                query_plans.platform_scope,
+                context,
+            ):
+                return await self._run_search_active(
+                    lease,
+                    query_plans,
+                    context,
+                    wait_seconds=wait_seconds,
+                    reauthenticated=reauthenticated,
+                )
+        return await self._run_search_active(
+            lease,
+            query_plans,
+            context,
+            wait_seconds=wait_seconds,
+            reauthenticated=reauthenticated,
+        )
+
+    async def _run_search_active(
+        self,
+        lease: ExecutionLease,
+        query_plans: QueryPlans,
+        context: PlatformContext,
+        *,
+        wait_seconds: int,
+        reauthenticated: set[Platform],
+    ) -> tuple[ExecutionLease, tuple[WorkflowIssue, ...]]:
         attempt = self._runtime.begin_stage(
             lease,
             stage_key="search",
@@ -470,6 +502,11 @@ class CollectionWorkflow:
                 for platform, requests in pending_auth_retries:
                     self._raise_if_cancelled(lease)
                     reauthenticated.add(platform)
+                    if self._search_browser_sessions is not None:
+                        await self._search_browser_sessions.reset_search_platform(
+                            platform,
+                            context,
+                        )
                     lease, _probes = await self._await_with_lease_maintenance(
                         lease,
                         self._authentication.ensure_authenticated(

@@ -18,6 +18,10 @@ param(
 
     [string]$MaxVideos = '18',
 
+    [string]$BrowserChannel = 'auto',
+
+    [switch]$ShowSearchBrowsers,
+
     [string]$ProgressFormat = 'jsonl',
 
     [string]$ControlDirectory,
@@ -61,7 +65,15 @@ if ($null -ne $UnexpectedArguments -and $UnexpectedArguments.Count -gt 0) {
         -Message 'The runner received unsupported arguments.' `
         -ExitCode 40
 }
+if (@('auto', 'edge', 'chrome') -notcontains $BrowserChannel.ToLowerInvariant()) {
+    Stop-WithContractError `
+        -Code 'browser_channel_invalid' `
+        -Message 'BrowserChannel must be auto, edge, or chrome.' `
+        -ExitCode 40
+}
+$BrowserChannel = $BrowserChannel.ToLowerInvariant()
 
+$collectorPathWasExplicit = $PSBoundParameters.ContainsKey('CollectorPath')
 $executorCommand = Get-Command 'material-collector' -ErrorAction SilentlyContinue
 if ($null -ne $executorCommand) {
     $executorPath = $executorCommand.Source
@@ -73,11 +85,19 @@ else {
     if (Test-Path -LiteralPath $uvToolCandidate -PathType Leaf) {
         $executorPath = $uvToolCandidate
     }
+    elseif ($collectorPathWasExplicit -and
+        -not [string]::IsNullOrWhiteSpace($CollectorPath) -and
+        (Test-Path -LiteralPath $CollectorPath -PathType Leaf)) {
+        $executorPath = (Resolve-Path -LiteralPath $CollectorPath).Path
+    }
     else {
         Stop-WithContractError `
             -Code 'collector_not_found' `
             -Message 'The material-collector executable could not be resolved.'
     }
+}
+if (-not $collectorPathWasExplicit) {
+    $CollectorPath = $executorPath
 }
 
 $arguments = [System.Collections.Generic.List[string]]::new()
@@ -111,6 +131,11 @@ $arguments.Add('--max-rounds')
 $arguments.Add($MaxRounds)
 $arguments.Add('--max-videos')
 $arguments.Add($MaxVideos)
+$arguments.Add('--browser-channel')
+$arguments.Add($BrowserChannel)
+if ($ShowSearchBrowsers) {
+    $arguments.Add('--show-search-browsers')
+}
 $arguments.Add('--progress-format')
 $arguments.Add($ProgressFormat)
 if ($PSBoundParameters.ContainsKey('ControlDirectory')) {

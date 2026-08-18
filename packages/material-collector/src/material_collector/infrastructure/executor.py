@@ -32,6 +32,8 @@ class ExecutorInvocation:
     request_timeout_seconds: str = "30"
     max_rounds: str = "3"
     max_videos: str = "18"
+    browser_channel: str = "auto"
+    show_search_browsers: bool = False
     progress_format: str = "jsonl"
     control_directory: str | None = None
 
@@ -88,6 +90,13 @@ class CollectionExecutor:
                 "ProgressFormat must be jsonl or text.",
                 40,
             )
+        browser_channel = invocation.browser_channel.casefold()
+        if browser_channel not in {"auto", "edge", "chrome"}:
+            raise ExecutorFailure(
+                "browser_channel_invalid",
+                "BrowserChannel must be auto, edge, or chrome.",
+                40,
+            )
         workspace = self._required_path(
             invocation.workspace,
             code="workspace_required",
@@ -122,6 +131,8 @@ class CollectionExecutor:
             request_timeout_seconds=timeout,
             max_rounds=max_rounds,
             max_videos=max_videos,
+            browser_channel=browser_channel,
+            show_search_browsers=invocation.show_search_browsers,
             progress_format=invocation.progress_format,
         )
         return ExecutorResult(
@@ -228,7 +239,7 @@ class CollectionExecutor:
                 "operation": operation,
                 "process_id": wrapper.pid,
                 "process_start_time": started_at,
-                "process_start_ticks": time.time_ns(),
+                "process_start_ticks": _process_start_ticks(wrapper.pid),
                 "host_id": socket.gethostname(),
                 "started_at": started_at,
                 "workspace_path": str(workspace),
@@ -351,8 +362,15 @@ class CollectionExecutor:
                 continue
             if record.get("host_id") != socket.gethostname():
                 continue
-            process_ids = (record.get("process_id"), record.get("collector_process_id"))
-            if any(isinstance(pid, int) and _process_alive(pid) for pid in process_ids):
+            if _recorded_process_alive(
+                record,
+                process_id_key="process_id",
+                start_ticks_key="process_start_ticks",
+            ) or _recorded_process_alive(
+                record,
+                process_id_key="collector_process_id",
+                start_ticks_key="collector_process_start_ticks",
+            ):
                 return record
         return None
 
@@ -433,6 +451,8 @@ class CollectionExecutor:
         request_timeout_seconds: int,
         max_rounds: int,
         max_videos: int,
+        browser_channel: str,
+        show_search_browsers: bool,
         progress_format: str,
     ) -> list[str]:
         arguments = [operation, "--workspace", str(workspace)]
@@ -449,10 +469,14 @@ class CollectionExecutor:
                     str(max_rounds),
                     "--max-videos",
                     str(max_videos),
+                    "--browser-channel",
+                    browser_channel,
                 ]
             )
         else:
             arguments.extend(["--session-id", session_id or ""])
+        if show_search_browsers:
+            arguments.append("--show-search-browsers")
         arguments.extend(["--progress-format", progress_format])
         return arguments
 
@@ -567,6 +591,94 @@ def _process_alive(process_id: int) -> bool:
     except OSError:
         return False
     return True
+
+
+def _process_start_ticks(process_id: int) -> int | str | None:
+    if process_id <= 0:
+        return None
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        class FileTime(ctypes.Structure):
+            _fields_ = (("low", ctypes.c_ulong), ("high", ctypes.c_ulong))
+
+        process_query_limited_information = 0x1000
+        kernel32 = ctypes.windll.kernel32
+        kernel32.OpenProcess.argtypes = (
+            wintypes.DWORD,
+            wintypes.BOOL,
+            wintypes.DWORD,
+        )
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetProcessTimes.argtypes = (
+            wintypes.HANDLE,
+            ctypes.POINTER(FileTime),
+            ctypes.POINTER(FileTime),
+            ctypes.POINTER(FileTime),
+            ctypes.POINTER(FileTime),
+        )
+        kernel32.GetProcessTimes.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = kernel32.OpenProcess(
+            process_query_limited_information,
+            False,
+            process_id,
+        )
+        if not handle:
+            return None
+        try:
+            created = FileTime()
+            exited = FileTime()
+            kernel = FileTime()
+            user = FileTime()
+            if not kernel32.GetProcessTimes(
+                handle,
+                ctypes.byref(created),
+                ctypes.byref(exited),
+                ctypes.byref(kernel),
+                ctypes.byref(user),
+            ):
+                return None
+            return (int(created.high) << 32) | int(created.low)
+        finally:
+            kernel32.CloseHandle(handle)
+    if sys.platform.startswith("linux"):
+        try:
+            stat = Path(f"/proc/{process_id}/stat").read_text(encoding="utf-8")
+            closing_parenthesis = stat.rfind(")")
+            if closing_parenthesis < 0:
+                return None
+            fields_after_command = stat[closing_parenthesis + 2 :].split()
+            return int(fields_after_command[19])
+        except (OSError, ValueError, IndexError):
+            return None
+    try:
+        completed = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(process_id)],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+    except OSError:
+        return None
+    value = completed.stdout.strip()
+    return value or None
+
+
+def _recorded_process_alive(
+    record: dict[str, Any],
+    *,
+    process_id_key: str,
+    start_ticks_key: str,
+) -> bool:
+    process_id = record.get(process_id_key)
+    expected_start_ticks = record.get(start_ticks_key)
+    if not isinstance(process_id, int) or expected_start_ticks is None:
+        return False
+    return _process_alive(process_id) and _process_start_ticks(process_id) == expected_start_ticks
 
 
 @contextmanager

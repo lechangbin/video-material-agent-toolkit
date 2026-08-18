@@ -26,7 +26,7 @@ from material_collector.core.errors import (
     SessionVersionError,
     WorkspaceError,
 )
-from material_collector.core.media import BrowserChannel
+from material_collector.core.media import BrowserChannel, Platform
 from material_collector.infrastructure.session_store import SqliteSessionStore
 
 FIXED_NOW = datetime(2026, 7, 29, 12, 0, tzinfo=UTC)
@@ -148,7 +148,7 @@ def test_application_accepts_a_store_adapter_without_touching_files(
         input_sha256="a" * 64,
         query_plans_snapshot_path="input/query-plans.json",
         query_plans_sha256="b" * 64,
-        platform_scope=("bilibili", "douyin", "xiaohongshu"),
+        platform_scope=(Platform.BILIBILI, Platform.DOUYIN, Platform.XIAOHONGSHU),
         constraints=RuntimeConstraints(),
         segments=(),
         warnings=(),
