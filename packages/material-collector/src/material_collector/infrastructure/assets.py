@@ -347,7 +347,8 @@ def _safe_title(value: str, max_length: int) -> str:
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
     if not cleaned:
         cleaned = "untitled"
-    if cleaned.casefold().upper() in _WINDOWS_RESERVED:
+    device_stem = cleaned.split(".", 1)[0].upper()
+    if device_stem in _WINDOWS_RESERVED:
         cleaned = f"_{cleaned}"
     if cleaned != value or len(cleaned) > max_length:
         digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]

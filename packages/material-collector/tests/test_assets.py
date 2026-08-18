@@ -134,7 +134,7 @@ def test_title_view_prefers_hard_links_and_preserves_previous_titles(
             session_id="ses_titles",
             platform=Platform.BILIBILI,
             source_id="BV1:source",
-            source_title="CON",
+            source_title="CON.txt",
             media_unit_title='第一段：城市/秋色? "全景"',
         ),
     )
@@ -155,7 +155,7 @@ def test_title_view_prefers_hard_links_and_preserves_previous_titles(
     second_path = store.workspace / second.display_relative_path
     assert first_path.is_file()
     assert second_path.is_file()
-    assert first_path.parts[-3].startswith("_CON--")
+    assert first_path.parts[-3].startswith("_CON.txt--")
     assert "__bilibili__" in first_path.parts[-3]
     assert first_path.name.startswith("第一段_城市_秋色_ _全景_--")
     assert os.path.samefile(store.resolve(asset), first_path)
