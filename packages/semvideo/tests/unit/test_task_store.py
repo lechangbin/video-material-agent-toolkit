@@ -5,7 +5,6 @@ import os
 from pathlib import Path
 
 import pytest
-
 from semvideo.application.task_store import (
     JobAlreadyExistsError,
     JobNotFoundError,
@@ -28,17 +27,24 @@ def test_create_job_builds_self_describing_package(store: TaskStore) -> None:
         source_video_id="video_001",
         profile="default",
         request={"render_final_segments": False},
+        execution_config={"schema_version": 1},
+        execution_config_hash="sha256:config",
     )
 
     job_root = store.job_path("job_001")
     assert job["job_id"] == "job_001"
+    assert job["execution_config"] == {"schema_version": 1}
+    assert job["execution_config_hash"] == "sha256:config"
     assert store.read_state("job_001")["state"] == "created"
     assert (job_root / "logs").is_dir()
     assert (job_root / "stages").is_dir()
     assert (job_root / "retrieval").is_dir()
     events = list(store.iter_events("job_001"))
     assert [event["type"] for event in events] == ["job_created"]
-    assert all(line.endswith("\n") for line in (job_root / "events.jsonl").read_text().splitlines(keepends=True))
+    assert all(
+        line.endswith("\n")
+        for line in (job_root / "events.jsonl").read_text().splitlines(keepends=True)
+    )
 
 
 def test_duplicate_job_and_unsafe_ids_are_rejected(store: TaskStore) -> None:

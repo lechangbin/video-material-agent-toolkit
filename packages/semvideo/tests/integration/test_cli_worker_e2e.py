@@ -148,6 +148,10 @@ def _configure_local_model(workspace, server: ThreadingHTTPServer) -> None:
     config_text = workspace.config.read_text(encoding="utf-8")
     config_text = config_text.replace("transcribe = true", "transcribe = false")
     config_text = config_text.replace(
+        'provider = "siliconflow"',
+        'provider = "openai-compatible"',
+    )
+    config_text = config_text.replace(
         'base_url = "https://api.siliconflow.cn/v1"',
         f'base_url = "http://127.0.0.1:{server.server_port}/v1"',
     )

@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import os
-import tomllib
 from pathlib import Path
 
+import tomllib
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -116,52 +116,32 @@ class WorkspaceConfig(StrictModel):
     concurrency: ConcurrencyConfig = Field(default_factory=ConcurrencyConfig)
     media: MediaConfig = Field(default_factory=MediaConfig)
     evidence: EvidenceConfig = Field(default_factory=EvidenceConfig)
-    cinematography: CinematographyConfig = Field(
-        default_factory=CinematographyConfig
-    )
+    cinematography: CinematographyConfig = Field(default_factory=CinematographyConfig)
     llm: LlmConfig = Field(default_factory=LlmConfig)
     render: RenderConfig = Field(default_factory=RenderConfig)
 
     @model_validator(mode="after")
     def validate_provider_profile(self) -> WorkspaceConfig:
         profile = get_provider_profile(self.llm.provider)
-        if profile is None or not profile.fixed_capabilities:
-            return self
-        expected = {
-            "base_url": profile.base_url,
-            "model": profile.model,
-            "credential_env": profile.credential_env,
-            "context_window_tokens": profile.context_window_tokens,
-        }
-        actual = {
-            "base_url": self.llm.base_url,
-            "model": self.llm.model,
-            "credential_env": self.llm.credential_env,
-            "context_window_tokens": self.llm.context_window_tokens,
-        }
-        mismatches = [
-            name for name, expected_value in expected.items()
-            if actual[name] != expected_value
-        ]
+        if profile is None:
+            raise ValueError(f"unsupported model provider: {self.llm.provider}")
+        mismatches = profile.configuration_mismatches(
+            base_url=self.llm.base_url,
+            model=self.llm.model,
+            credential_env=self.llm.credential_env,
+            context_window_tokens=self.llm.context_window_tokens,
+            max_output_tokens=self.llm.max_output_tokens,
+            enable_thinking=self.llm.enable_thinking,
+        )
         if mismatches:
             raise ValueError(
                 f"{profile.provider} provider profile requires fixed fields: "
                 + ", ".join(mismatches)
             )
-        if self.llm.max_output_tokens > profile.provider_max_output_tokens:
-            raise ValueError(
-                f"{profile.provider} max_output_tokens cannot exceed "
-                f"{profile.provider_max_output_tokens}"
-            )
         if self.concurrency.llm > profile.max_concurrency:
             raise ValueError(
                 f"{profile.provider} llm concurrency cannot exceed "
                 f"{profile.max_concurrency}"
-            )
-        if self.llm.enable_thinking and not profile.supports_enable_thinking:
-            raise ValueError(
-                f"{profile.provider} provider profile does not expose "
-                "enable_thinking"
             )
         return self
 

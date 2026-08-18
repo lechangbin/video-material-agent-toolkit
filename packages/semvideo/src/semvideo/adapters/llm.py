@@ -14,7 +14,8 @@ from typing import Any
 import httpx
 from pydantic import ValidationError
 
-from semvideo.adapters.profiles import get_provider_profile
+from semvideo.adapters.profiles import require_provider_profile
+from semvideo.application.evidence_requests import EvidenceRequestPlanner
 from semvideo.config import LlmConfig
 from semvideo.errors import ErrorCategory, RecoveryAction, SemvideoError
 from semvideo.infrastructure.io import atomic_write_json, read_json
@@ -68,7 +69,46 @@ class OpenAICompatibleLlm:
                 details={"credential_env": config.credential_env},
             )
         self.config = config
-        self._profile = get_provider_profile(config.provider)
+        try:
+            self._profile = require_provider_profile(config.provider)
+        except ValueError as exc:
+            raise SemvideoError(
+                code="llm_provider_unsupported",
+                category=ErrorCategory.CONFIG,
+                message=f"不支持的模型提供商：{config.provider}",
+                recovery=RecoveryAction.CORRECT_AND_RETRY,
+                stage="analyze",
+                details={"provider": config.provider},
+                exit_code=2,
+            ) from exc
+        mismatches = self._profile.configuration_mismatches(
+            base_url=config.base_url,
+            model=config.model,
+            credential_env=config.credential_env,
+            context_window_tokens=config.context_window_tokens,
+            max_output_tokens=config.max_output_tokens,
+            enable_thinking=config.enable_thinking,
+        )
+        if mismatches:
+            raise SemvideoError(
+                code="llm_provider_profile_mismatch",
+                category=ErrorCategory.CONFIG,
+                message="模型适配器配置偏离固定 Provider Profile。",
+                recovery=RecoveryAction.CORRECT_AND_RETRY,
+                stage="analyze",
+                details={
+                    "provider": config.provider,
+                    "mismatched_fields": list(mismatches),
+                },
+                exit_code=2,
+            )
+        self._request_planner = EvidenceRequestPlanner(
+            max_input_tokens=config.max_input_tokens,
+            image_token_reserve=self._profile.image_token_reserve,
+            message_overhead_tokens=self._profile.message_overhead_tokens,
+            provider=config.provider,
+            model=config.model,
+        )
         self._api_key = api_key
         self._client = client or httpx.Client(timeout=config.timeout_seconds)
         self._owns_client = client is None
@@ -79,13 +119,14 @@ class OpenAICompatibleLlm:
         if self._owns_client:
             self._client.close()
 
-    def __enter__(self) -> "OpenAICompatibleLlm":
+    def __enter__(self) -> OpenAICompatibleLlm:
         return self
 
     def __exit__(self, *_: object) -> None:
         self.close()
 
     def chat(self, messages: list[dict[str, Any]]) -> ModelCallResult:
+        self._request_planner.require_fit(messages)
         payload: dict[str, Any] = {
             "model": self.config.model,
             "messages": messages,
@@ -93,8 +134,11 @@ class OpenAICompatibleLlm:
             "max_tokens": self.config.max_output_tokens,
             "stream": False,
         }
-        if self._profile is None or self._profile.supports_enable_thinking:
-            payload["enable_thinking"] = self.config.enable_thinking
+        payload.update(
+            self._profile.request_options(
+                enable_thinking=self.config.enable_thinking,
+            )
+        )
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
@@ -209,8 +253,8 @@ class OpenAICompatibleLlm:
         error.provider_attempts = provider_attempts
         raise error
 
-    @staticmethod
     def _http_attempt_record(
+        self,
         response: httpx.Response,
         attempt: int,
     ) -> dict[str, Any]:
@@ -218,12 +262,12 @@ class OpenAICompatibleLlm:
             raw_response: Any = response.json()
         except ValueError:
             raw_response = {"text": response.text[:2000]}
-        headers = OpenAICompatibleLlm._response_headers(response)
+        headers = self._response_headers(response)
         record: dict[str, Any] = {
             "attempt": attempt,
             "outcome": "success" if not response.is_error else "http_error",
             "status_code": response.status_code,
-            "trace_id": OpenAICompatibleLlm._trace_id(headers),
+            "trace_id": self._trace_id(headers),
             "response_headers": headers,
             "raw_response": raw_response,
         }
@@ -242,29 +286,16 @@ class OpenAICompatibleLlm:
                 pass
         return record
 
-    @staticmethod
-    def _response_headers(response: httpx.Response) -> dict[str, str]:
-        allowed = {
-            "x-siliconcloud-trace-id",
-            "x-request-id",
-            "x-trace-id",
-            "request-id",
-            "retry-after",
-        }
+    def _response_headers(self, response: httpx.Response) -> dict[str, str]:
+        allowed = {*self._profile.trace_header_names, "retry-after"}
         return {
             key.lower(): value
             for key, value in response.headers.items()
             if key.lower() in allowed
         }
 
-    @staticmethod
-    def _trace_id(headers: dict[str, str]) -> str | None:
-        for name in (
-            "x-siliconcloud-trace-id",
-            "x-request-id",
-            "x-trace-id",
-            "request-id",
-        ):
+    def _trace_id(self, headers: dict[str, str]) -> str | None:
+        for name in self._profile.trace_header_names:
             if headers.get(name):
                 return headers[name]
         return None
@@ -282,9 +313,7 @@ class OpenAICompatibleLlm:
         while self._cooldown_path is not None and self._cooldown_path.is_file():
             try:
                 value = read_json(self._cooldown_path)
-                remaining = (
-                    float(value.get("cooldown_until_epoch", 0.0)) - time.time()
-                )
+                remaining = float(value.get("cooldown_until_epoch", 0.0)) - time.time()
             except (OSError, ValueError, TypeError):
                 return
             if remaining <= 0:
@@ -331,7 +360,9 @@ class OpenAICompatibleLlm:
                 exit_code=5,
             ) from exc
 
-    def segment(self, messages: list[dict[str, Any]]) -> tuple[SegmentationResponse, ModelCallResult]:
+    def segment(
+        self, messages: list[dict[str, Any]]
+    ) -> tuple[SegmentationResponse, ModelCallResult]:
         result = self.chat(messages)
         try:
             parsed = parse_json_content(result.content)
@@ -348,8 +379,7 @@ class OpenAICompatibleLlm:
                 exit_code=5,
             ) from exc
 
-    @staticmethod
-    def _provider_error(response: httpx.Response) -> SemvideoError:
+    def _provider_error(self, response: httpx.Response) -> SemvideoError:
         status = response.status_code
         try:
             body = response.json()
@@ -367,9 +397,7 @@ class OpenAICompatibleLlm:
                 details={
                     "status_code": status,
                     "provider_detail": detail,
-                    "trace_id": OpenAICompatibleLlm._trace_id(
-                        OpenAICompatibleLlm._response_headers(response)
-                    ),
+                    "trace_id": self._trace_id(self._response_headers(response)),
                 },
                 exit_code=5,
             )
@@ -386,9 +414,7 @@ class OpenAICompatibleLlm:
             details={
                 "status_code": status,
                 "provider_detail": detail,
-                "trace_id": OpenAICompatibleLlm._trace_id(
-                    OpenAICompatibleLlm._response_headers(response)
-                ),
+                "trace_id": self._trace_id(self._response_headers(response)),
             },
             exit_code=5,
         )

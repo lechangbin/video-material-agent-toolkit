@@ -81,7 +81,7 @@ def set_llm_provider_profile(
     """Select a supported model provider and its fixed safety envelope."""
 
     profile = get_provider_profile(provider)
-    if profile is None:
+    if profile is None or not profile.selectable:
         raise config_error(
             "llm_provider_unsupported",
             f"不支持的模型提供商：{provider}",

@@ -60,6 +60,25 @@ def test_config_rejects_secret_like_unknown_fields(tmp_path: Path) -> None:
     assert raised.value.payload.code == "workspace_config_invalid"
 
 
+def test_config_rejects_unknown_provider_and_siliconflow_drift(
+    tmp_path: Path,
+) -> None:
+    for candidate in (
+        DEFAULT_CONFIG_TOML.replace(
+            'provider = "siliconflow"',
+            'provider = "custom"',
+        ),
+        DEFAULT_CONFIG_TOML.replace(
+            'model = "Qwen/Qwen3.6-35B-A3B"',
+            'model = "unverified-model"',
+        ),
+    ):
+        (tmp_path / "config.toml").write_text(candidate, encoding="utf-8")
+        with pytest.raises(SemvideoError) as raised:
+            load_workspace_config(tmp_path)
+        assert raised.value.payload.code == "workspace_config_invalid"
+
+
 def test_load_agnes_profile_uses_512k_context_and_two_slots(tmp_path: Path) -> None:
     (tmp_path / "config.toml").write_text(_agnes_config(), encoding="utf-8")
 
