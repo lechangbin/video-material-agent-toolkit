@@ -1109,6 +1109,138 @@ async def test_xiaohongshu_uses_visible_profile_link_over_bare_endpoint() -> Non
     )
 
 
+async def test_xiaohongshu_unknown_rendered_406_enters_visible_login(
+    tmp_path: Path,
+) -> None:
+    class FakeResponse:
+        status = 406
+        ok = False
+
+        async def json(self) -> dict[str, object]:
+            return {"code": -1, "success": False}
+
+    class FakePage:
+        logged_in = False
+
+        async def evaluate(self, expression: str) -> dict[str, bool]:
+            assert "/user/profile/" in expression
+            return {
+                "profile_me_visible": self.logged_in,
+                "captcha_prompt": False,
+                "login_container_visible": False,
+            }
+
+    class FakeContext:
+        request: FakeContext
+
+        def __init__(self) -> None:
+            self.pages = [FakePage()]
+            self.request = self
+
+        async def get(self, _url: str, *, timeout: int) -> FakeResponse:
+            assert timeout == 15_000
+            return FakeResponse()
+
+    context = FakeContext()
+
+    class XiaohongshuDriver(FakeDriver):
+        async def probe(
+            self,
+            platform: Platform,
+            user_data_dir: Path,
+        ) -> DriverProbe:
+            assert platform is Platform.XIAOHONGSHU
+            assert user_data_dir.name == platform.value
+            self.calls.append(("probe", platform, None))
+            return await _probe_xiaohongshu(context)  # type: ignore[arg-type]
+
+        async def login(
+            self,
+            platform: Platform,
+            user_data_dir: Path,
+            wait_seconds: int,
+            progress: Callable[[str, dict[str, object]], None] | None = None,
+        ) -> DriverProbe:
+            assert platform is Platform.XIAOHONGSHU
+            assert user_data_dir.name == platform.value
+            self.calls.append(("login", platform, wait_seconds))
+            if progress is not None:
+                progress("authentication_login_window_opened", {})
+                progress("authentication_login_waiting", {})
+            context.pages[0].logged_in = True
+            return await _probe_xiaohongshu(context)  # type: ignore[arg-type]
+
+    profile_dir = (
+        tmp_path
+        / "auth"
+        / "editing"
+        / BrowserChannel.CHROME.value
+        / Platform.XIAOHONGSHU.value
+    )
+    profile_dir.mkdir(parents=True)
+    driver = XiaohongshuDriver()
+
+    result = await gateway(tmp_path, driver).ensure_authenticated(
+        (Platform.XIAOHONGSHU,),
+        "editing",
+        30,
+    )
+
+    assert result.probes[0].status is AuthStatus.VALID
+    assert driver.calls == [
+        ("probe", Platform.XIAOHONGSHU, None),
+        ("login", Platform.XIAOHONGSHU, 30),
+    ]
+
+
+async def test_xiaohongshu_persistent_406_ambiguity_reports_login_timeout(
+    tmp_path: Path,
+) -> None:
+    class AmbiguousDriver(FakeDriver):
+        async def probe(
+            self,
+            platform: Platform,
+            user_data_dir: Path,
+        ) -> DriverProbe:
+            assert platform is Platform.XIAOHONGSHU
+            assert user_data_dir.name == platform.value
+            self.calls.append(("probe", platform, None))
+            return DriverProbe(AuthStatus.INVALID, "interactive_login_required")
+
+        async def login(
+            self,
+            platform: Platform,
+            user_data_dir: Path,
+            wait_seconds: int,
+            progress: Callable[[str, dict[str, object]], None] | None = None,
+        ) -> DriverProbe:
+            del progress
+            assert platform is Platform.XIAOHONGSHU
+            assert user_data_dir.name == platform.value
+            self.calls.append(("login", platform, wait_seconds))
+            return DriverProbe(AuthStatus.INVALID, "interactive_login_required")
+
+    profile_dir = (
+        tmp_path
+        / "auth"
+        / "editing"
+        / BrowserChannel.CHROME.value
+        / Platform.XIAOHONGSHU.value
+    )
+    profile_dir.mkdir(parents=True)
+
+    with pytest.raises(AuthenticationLoginTimeoutError) as captured:
+        await gateway(tmp_path, AmbiguousDriver()).ensure_authenticated(
+            (Platform.XIAOHONGSHU,),
+            "editing",
+            30,
+        )
+
+    assert captured.value.code == "auth_login_timeout"
+    assert captured.value.details["reason_code"] == "interactive_login_required"
+    assert captured.value.details["platform"] == "xiaohongshu"
+
+
 async def test_xiaohongshu_captcha_is_not_accepted_as_logged_in() -> None:
     class FakePage:
         async def evaluate(self, expression: str) -> dict[str, bool]:

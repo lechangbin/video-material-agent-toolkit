@@ -32,6 +32,10 @@
   - `challenge_required`：平台要求二维码、验证码或其他人工挑战；
   - `probe_failed`：网络、页面结构或接口变化使探针无法可靠判断。
 - 只有 `valid` 可以跨过认证门禁。`invalid` 和 `challenge_required` 触发有头登录；`probe_failed` 作为平台访问技术错误返回，不能擅自判为未登录或空搜索结果。
+- 小红书裸自身份接口的 HTTP 406 是已知的交互式访问边界：在 rendered 状态未知时将其
+  归一为 `invalid/interactive_login_required` 以打开有头登录，但绝不把 406 当作
+  `valid`。登录后仍必须由 rendered “我”入口或可识别身份对象提供正面证据；持续
+  不明确按 `auth_login_timeout` 报告。
 - 采集会话只记录认证配置标识、平台、规范化探针状态和验证时间，不记录平台账号、昵称、Cookie、请求头或接口原始响应。
 - 第一阶段不把采集会话绑定到具体平台账号。同一认证配置中切换账号后，只要只读探针返回 `valid`，后续会话和恢复流程可以继续。
 

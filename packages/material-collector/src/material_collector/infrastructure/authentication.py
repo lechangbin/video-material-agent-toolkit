@@ -886,6 +886,7 @@ async def _probe_xiaohongshu(context: BrowserContext) -> DriverProbe:
         context.request,
         "https://edith.xiaohongshu.com/api/sns/web/v1/user/selfinfo",
         identity_keys=("user_id", "userid", "red_id"),
+        interactive_status_codes=(406,),
     )
 
 
@@ -895,6 +896,7 @@ async def _probe_json_identity(
     *,
     identity_keys: tuple[str, ...],
     invalid_status_codes: tuple[int, ...] = (),
+    interactive_status_codes: tuple[int, ...] = (),
 ) -> DriverProbe:
     try:
         response = await request.get(url, timeout=15_000)
@@ -902,6 +904,8 @@ async def _probe_json_identity(
             return DriverProbe(AuthStatus.INVALID, "platform_reports_logged_out")
         if response.status in {403, 412, 429}:
             return DriverProbe(AuthStatus.CHALLENGE_REQUIRED, "platform_challenge")
+        if response.status in interactive_status_codes:
+            return DriverProbe(AuthStatus.INVALID, "interactive_login_required")
         if not response.ok:
             return DriverProbe(AuthStatus.PROBE_FAILED, "unexpected_http_status")
         payload = await response.json()
