@@ -70,6 +70,50 @@ material-collector contracts normalize --input <path> --query-plans <path>
 警告，不创建会话、不写素材工作区。下游总编排必须使用该结果计算冻结哈希，避免在
 Skill 中复制文本规范化、安全 ID、引用和去重规则。
 
+### Collector 自有执行器
+
+```text
+material-collector executor invoke \
+  --operation run|resume|status|cancel \
+  [--collector-path <absolute-command>] \
+  --workspace <path> \
+  [--input <path>] \
+  [--query-plans <path>] \
+  [--session-id <id>] \
+  [--request-timeout-seconds <seconds>] \
+  [--max-rounds <n>] \
+  [--max-videos <n>] \
+  [--browser-channel auto|edge|chrome] \
+  [--show-search-browsers] \
+  [--progress-format jsonl|text] \
+  [--control-directory <path>]
+```
+
+- `run` 必须提供 `--input` 和 `--query-plans`；`resume|status|cancel` 必须提供
+  `--session-id`。`--browser-channel` 只用于 `run`，`--show-search-browsers` 只用于
+  `run|resume`。多余、缺失或非法参数在启动子进程前返回结构化错误。
+- `--collector-path` 指定执行器要启动的同版本 Collector 子命令；省略时使用
+  当前 Python 环境中的 Collector。发布 Skill 在 Windows 上通过自己的薄适配器
+  把已验证的绝对命令同时固定为 executor 和 child；PowerShell 参数不属于
+  本 CLI 命令面。
+- `run|resume` 成功启动时，stdout 仅返回一个 `schema_version=1.0`、
+  `status=started` 的 JSON，并包含 `operation`、包装进程 `process_id`、真实子进程
+  `collector_process_id`、`session_id`、`stdout_path`、`stderr_path` 和
+  `control_path`。`started` 只表示子进程与会话握手成功，不表示采集完成。
+- `status|cancel` 不建立后台控制记录，而是同步转发子命令的唯一最终 JSON
+  和退出码。
+- 每个 session 同时只允许一个 `resume` 执行器；不同新 `run` 可以在同一
+  素材工作区并存。控制记录保存 PID 与 OS 进程启动标识，中断恢复不会
+  把复用 PID 误认为旧执行器。取消和恢复仍以会话 runtime 租约为权威。
+- 执行器 stdout 始终只有一个版本化 JSON，执行器自身 stderr 保持为空；
+  采集子进程输出进入记录的 stdout/stderr 文件。参数错误返回 `40`，
+  活执行器冲突与启动/恢复失败返回 `30`，不可恢复内部错误返回 `50`。
+  错误至少包含 `status=error`、`error.code` 和安全的结构化细节；调用方不得
+  在失败后发明第二套进程控制。
+
+执行器所有权、薄 Shell 适配器边界与不接受 Skill 自建进程管理的决策见
+[`0006-collector-owns-background-execution.md`](../adr/0006-collector-owns-background-execution.md)。
+
 ### 会话生命周期
 
 ```text
