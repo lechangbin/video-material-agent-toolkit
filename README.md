@@ -11,7 +11,8 @@
 - 四个遵循开放 [Agent Skills 规范](https://agentskills.io/) 的 Skills，用于把搜索、
   理解、Top-K 选择和有界补搜编排为可追踪工作流。
 
-当前发布版本为 `0.1.3`，支持 Windows x64 和 CPython `>=3.14.6,<3.15`。
+当前工具包发布为 `v0.2.0`：Material Collector `0.2.0`，Semvideo `0.1.3`。
+支持 Windows x64 和 CPython `>=3.14.6,<3.15`。
 Docker 部署另支持 Linux/amd64 容器，并通过本机 noVNC 页面完成交互式平台登录。
 
 > 本项目提供技术工具，不授予任何第三方视频、音乐、肖像、平台数据或商标的使用权。
@@ -154,7 +155,7 @@ FFmpeg 构建，请自行核对该构建的许可证和编码器配置。
 下载：
 
 ```text
-video_material_collector-0.1.3-py3-none-any.whl
+video_material_collector-0.2.0-py3-none-any.whl
 semvideo-0.1.3-py3-none-any.whl
 SHA256SUMS.txt
 ```
@@ -162,7 +163,7 @@ SHA256SUMS.txt
 也可以使用 GitHub CLI：
 
 ```powershell
-gh release download v0.1.3 `
+gh release download v0.2.0 `
   --repo lechangbin/video-material-agent-toolkit `
   --dir .\video-toolkit-release
 ```
@@ -171,7 +172,7 @@ gh release download v0.1.3 `
 
 ```powershell
 uv tool install --python 3.14 `
-  .\video-toolkit-release\video_material_collector-0.1.3-py3-none-any.whl
+  .\video-toolkit-release\video_material_collector-0.2.0-py3-none-any.whl
 
 python -m pip install --user `
   .\video-toolkit-release\semvideo-0.1.3-py3-none-any.whl
