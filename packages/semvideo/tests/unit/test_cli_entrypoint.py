@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import importlib.util
+import json
 import os
 import sys
 from pathlib import Path
@@ -11,8 +11,8 @@ from typer.main import get_command
 from typer.testing import CliRunner
 
 from semvideo.adapters.ffmpeg import FfmpegCapabilities
-from semvideo.application.task_store import TaskStore
 from semvideo.application.diagnostics import run_doctor
+from semvideo.application.task_store import TaskStore
 from semvideo.application.workspace import initialize_workspace
 from semvideo.cli import app, main
 from semvideo.config import load_workspace_config
@@ -402,6 +402,73 @@ def test_config_set_media_tools_updates_workspace_through_cli(
     assert config.media.ffmpeg_path == str(ffmpeg.resolve())
     assert config.media.ffprobe_path == str(ffprobe.resolve())
     assert config.media.analysis_proxy_crf == 27
+
+
+def test_config_set_llm_provider_selects_agnes_safety_profile(tmp_path) -> None:
+    workspace = initialize_workspace(tmp_path / "workspace")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "config",
+            "set-llm-provider",
+            "agnes",
+            "--workspace",
+            str(workspace.root),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stderr
+    payload = json.loads(result.stdout)
+    config = load_workspace_config(workspace.data)
+    assert payload == {
+        "schema_version": 1,
+        "provider": "agnes",
+        "base_url": "https://apihub.agnes-ai.com/v1",
+        "model": "agnes-2.5-flash",
+        "credential_env": "AGNES_API_KEY",
+        "context_window_tokens": 524288,
+        "max_input_tokens": 516096,
+        "max_output_tokens": 8192,
+        "max_concurrency": 2,
+        "configured_concurrency": 2,
+    }
+    assert config.llm.model == "agnes-2.5-flash"
+    assert config.concurrency.llm == 2
+
+    shown = CliRunner().invoke(
+        app,
+        [
+            "config",
+            "show",
+            "--workspace",
+            str(workspace.root),
+            "--json",
+        ],
+    )
+    assert shown.exit_code == 0, shown.stderr
+    shown_payload = json.loads(shown.stdout)
+    assert shown_payload["llm"]["context_window_tokens"] == 524288
+    assert shown_payload["llm"]["max_input_tokens"] == 516096
+    assert shown_payload["llm"]["credential_present"] is False
+
+    restored = CliRunner().invoke(
+        app,
+        [
+            "config",
+            "set-llm-provider",
+            "siliconflow",
+            "--workspace",
+            str(workspace.root),
+            "--json",
+        ],
+    )
+    assert restored.exit_code == 0, restored.stderr
+    restored_payload = json.loads(restored.stdout)
+    assert restored_payload["provider"] == "siliconflow"
+    assert restored_payload["model"] == "Qwen/Qwen3.6-35B-A3B"
+    assert restored_payload["credential_env"] == "SEMVIDEO_API_KEY"
 
 
 def test_job_logs_help_offers_quiet_follow_mode() -> None:

@@ -10,9 +10,9 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 import typer
+from rich.console import Console
 from typer._click.exceptions import Exit as ClickExit
 from typer._click.exceptions import UsageError
-from rich.console import Console
 
 from semvideo import (
     JOB_SCHEMA_VERSION,
@@ -20,6 +20,11 @@ from semvideo import (
     WORKSPACE_SCHEMA_VERSION,
     __version__,
 )
+from semvideo.application.configuration import (
+    set_llm_provider_profile,
+    set_media_tools,
+)
+from semvideo.application.diagnostics import run_doctor
 from semvideo.application.jobs import (
     cancel_job,
     get_job_admission,
@@ -28,8 +33,6 @@ from semvideo.application.jobs import (
     submit_job,
     wait_for_job,
 )
-from semvideo.application.configuration import set_media_tools
-from semvideo.application.diagnostics import run_doctor
 from semvideo.application.queries import (
     get_inspection_report,
     get_job,
@@ -573,6 +576,7 @@ def config_show(
         resolved = _workspace(workspace)
         config = load_workspace_config(resolved.data)
         value = config.model_dump(mode="json")
+        value["llm"]["max_input_tokens"] = config.llm.max_input_tokens
         value["llm"]["credential_present"] = config.credential_present()
         _emit(value, json_output=json_output)
     except BaseException as exc:
@@ -592,6 +596,24 @@ def config_set_media_tools(
                 _workspace(workspace),
                 ffmpeg_path=_native_cli_path(ffmpeg),
                 ffprobe_path=_native_cli_path(ffprobe),
+            ),
+            json_output=json_output,
+        )
+    except BaseException as exc:
+        _abort(exc, json_output=json_output)
+
+
+@config_app.command("set-llm-provider")
+def config_set_llm_provider(
+    provider: str = typer.Argument(..., help="Supported provider profile name."),
+    workspace: str | None = typer.Option(None, "--workspace"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    try:
+        _emit(
+            set_llm_provider_profile(
+                _workspace(workspace),
+                provider=provider,
             ),
             json_output=json_output,
         )

@@ -14,6 +14,7 @@ from typing import Any
 import httpx
 from pydantic import ValidationError
 
+from semvideo.adapters.profiles import get_provider_profile
 from semvideo.config import LlmConfig
 from semvideo.errors import ErrorCategory, RecoveryAction, SemvideoError
 from semvideo.infrastructure.io import atomic_write_json, read_json
@@ -67,6 +68,7 @@ class OpenAICompatibleLlm:
                 details={"credential_env": config.credential_env},
             )
         self.config = config
+        self._profile = get_provider_profile(config.provider)
         self._api_key = api_key
         self._client = client or httpx.Client(timeout=config.timeout_seconds)
         self._owns_client = client is None
@@ -90,8 +92,9 @@ class OpenAICompatibleLlm:
             "temperature": self.config.temperature,
             "max_tokens": self.config.max_output_tokens,
             "stream": False,
-            "enable_thinking": self.config.enable_thinking,
         }
+        if self._profile is None or self._profile.supports_enable_thinking:
+            payload["enable_thinking"] = self.config.enable_thinking
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
@@ -123,19 +126,43 @@ class OpenAICompatibleLlm:
                 body = response.json()
                 content = body["choices"][0]["message"]["content"]
                 usage = body.get("usage") or {}
+                total_tokens = usage.get("total_tokens")
+                if (
+                    isinstance(total_tokens, int)
+                    and total_tokens > self.config.context_window_tokens
+                ):
+                    context_error = SemvideoError(
+                        code="provider_context_usage_invalid",
+                        category=ErrorCategory.MODEL_RESPONSE_INVALID,
+                        message="模型报告的 token 用量超过已配置上下文上限。",
+                        recovery=RecoveryAction.REPORT_BUG,
+                        stage="analyze",
+                        details={
+                            "provider": self.config.provider,
+                            "model": self.config.model,
+                            "reported_total_tokens": total_tokens,
+                            "context_window_tokens": (
+                                self.config.context_window_tokens
+                            ),
+                        },
+                        exit_code=5,
+                    )
+                    setattr(
+                        context_error,
+                        "provider_attempts",
+                        provider_attempts,
+                    )
+                    raise context_error
+                response_headers = self._response_headers(response)
                 return ModelCallResult(
                     content=str(content),
                     usage=ModelUsage(
                         input_tokens=usage.get("prompt_tokens"),
                         output_tokens=usage.get("completion_tokens"),
-                        total_tokens=usage.get("total_tokens"),
+                        total_tokens=total_tokens,
                     ),
-                    trace_id=response.headers.get("x-siliconcloud-trace-id"),
-                    response_headers={
-                        key.lower(): value
-                        for key, value in response.headers.items()
-                        if key.lower() in {"x-siliconcloud-trace-id", "retry-after"}
-                    },
+                    trace_id=self._trace_id(response_headers),
+                    response_headers=response_headers,
                     raw_response=body,
                     provider_attempts=provider_attempts,
                 )
@@ -191,16 +218,12 @@ class OpenAICompatibleLlm:
             raw_response: Any = response.json()
         except ValueError:
             raw_response = {"text": response.text[:2000]}
-        headers = {
-            key.lower(): value
-            for key, value in response.headers.items()
-            if key.lower() in {"x-siliconcloud-trace-id", "retry-after"}
-        }
+        headers = OpenAICompatibleLlm._response_headers(response)
         record: dict[str, Any] = {
             "attempt": attempt,
             "outcome": "success" if not response.is_error else "http_error",
             "status_code": response.status_code,
-            "trace_id": response.headers.get("x-siliconcloud-trace-id"),
+            "trace_id": OpenAICompatibleLlm._trace_id(headers),
             "response_headers": headers,
             "raw_response": raw_response,
         }
@@ -218,6 +241,33 @@ class OpenAICompatibleLlm:
             except (KeyError, IndexError, TypeError):
                 pass
         return record
+
+    @staticmethod
+    def _response_headers(response: httpx.Response) -> dict[str, str]:
+        allowed = {
+            "x-siliconcloud-trace-id",
+            "x-request-id",
+            "x-trace-id",
+            "request-id",
+            "retry-after",
+        }
+        return {
+            key.lower(): value
+            for key, value in response.headers.items()
+            if key.lower() in allowed
+        }
+
+    @staticmethod
+    def _trace_id(headers: dict[str, str]) -> str | None:
+        for name in (
+            "x-siliconcloud-trace-id",
+            "x-request-id",
+            "x-trace-id",
+            "request-id",
+        ):
+            if headers.get(name):
+                return headers[name]
+        return None
 
     def _retry_delay(self, response: httpx.Response, attempt: int) -> float:
         retry_after = response.headers.get("retry-after")
@@ -317,7 +367,9 @@ class OpenAICompatibleLlm:
                 details={
                     "status_code": status,
                     "provider_detail": detail,
-                    "trace_id": response.headers.get("x-siliconcloud-trace-id"),
+                    "trace_id": OpenAICompatibleLlm._trace_id(
+                        OpenAICompatibleLlm._response_headers(response)
+                    ),
                 },
                 exit_code=5,
             )
@@ -334,7 +386,9 @@ class OpenAICompatibleLlm:
             details={
                 "status_code": status,
                 "provider_detail": detail,
-                "trace_id": response.headers.get("x-siliconcloud-trace-id"),
+                "trace_id": OpenAICompatibleLlm._trace_id(
+                    OpenAICompatibleLlm._response_headers(response)
+                ),
             },
             exit_code=5,
         )

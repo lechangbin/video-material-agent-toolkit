@@ -17,6 +17,7 @@ services:
       - XDG_CACHE_HOME=/data/cache
       - HF_HOME=/data/cache/huggingface
       - SEMVIDEO_API_KEY
+      - AGNES_API_KEY
       - SEMVIDEO_BASE_URL
       - SEMVIDEO_MODEL
     volumes:

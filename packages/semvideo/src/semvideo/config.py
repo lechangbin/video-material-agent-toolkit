@@ -6,7 +6,17 @@ import os
 import tomllib
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
+
+from semvideo.adapters.profiles import get_provider_profile
 
 from .errors import config_error
 
@@ -42,7 +52,7 @@ class CinematographyConfig(StrictModel):
 
     @field_validator("maximum_frames_per_shot")
     @classmethod
-    def validate_frame_bounds(cls, value: int, info) -> int:
+    def validate_frame_bounds(cls, value: int, info: ValidationInfo) -> int:
         minimum = info.data.get("minimum_frames_per_shot")
         if minimum is not None and value < minimum:
             raise ValueError(
@@ -68,6 +78,7 @@ class LlmConfig(StrictModel):
     credential_env: str = "SEMVIDEO_API_KEY"
     enable_thinking: bool = False
     timeout_seconds: float = Field(default=600.0, gt=0)
+    context_window_tokens: int = Field(default=256 * 1024, ge=16 * 1024)
     max_output_tokens: int = Field(default=8192, ge=512)
     temperature: float = Field(default=0.1, ge=0.0, le=2.0)
     max_retries: int = Field(default=4, ge=0, le=10)
@@ -76,6 +87,18 @@ class LlmConfig(StrictModel):
     @classmethod
     def normalize_base_url(cls, value: str) -> str:
         return value.rstrip("/")
+
+    @model_validator(mode="after")
+    def validate_token_budget(self) -> LlmConfig:
+        if self.max_output_tokens >= self.context_window_tokens:
+            raise ValueError(
+                "max_output_tokens must be smaller than context_window_tokens"
+            )
+        return self
+
+    @property
+    def max_input_tokens(self) -> int:
+        return self.context_window_tokens - self.max_output_tokens
 
 
 class RenderConfig(StrictModel):
@@ -98,6 +121,49 @@ class WorkspaceConfig(StrictModel):
     )
     llm: LlmConfig = Field(default_factory=LlmConfig)
     render: RenderConfig = Field(default_factory=RenderConfig)
+
+    @model_validator(mode="after")
+    def validate_provider_profile(self) -> WorkspaceConfig:
+        profile = get_provider_profile(self.llm.provider)
+        if profile is None or not profile.fixed_capabilities:
+            return self
+        expected = {
+            "base_url": profile.base_url,
+            "model": profile.model,
+            "credential_env": profile.credential_env,
+            "context_window_tokens": profile.context_window_tokens,
+        }
+        actual = {
+            "base_url": self.llm.base_url,
+            "model": self.llm.model,
+            "credential_env": self.llm.credential_env,
+            "context_window_tokens": self.llm.context_window_tokens,
+        }
+        mismatches = [
+            name for name, expected_value in expected.items()
+            if actual[name] != expected_value
+        ]
+        if mismatches:
+            raise ValueError(
+                f"{profile.provider} provider profile requires fixed fields: "
+                + ", ".join(mismatches)
+            )
+        if self.llm.max_output_tokens > profile.provider_max_output_tokens:
+            raise ValueError(
+                f"{profile.provider} max_output_tokens cannot exceed "
+                f"{profile.provider_max_output_tokens}"
+            )
+        if self.concurrency.llm > profile.max_concurrency:
+            raise ValueError(
+                f"{profile.provider} llm concurrency cannot exceed "
+                f"{profile.max_concurrency}"
+            )
+        if self.llm.enable_thinking and not profile.supports_enable_thinking:
+            raise ValueError(
+                f"{profile.provider} provider profile does not expose "
+                "enable_thinking"
+            )
+        return self
 
     def credential_present(self) -> bool:
         return bool(os.environ.get(self.llm.credential_env))
@@ -146,6 +212,7 @@ model = "Qwen/Qwen3.6-35B-A3B"
 credential_env = "SEMVIDEO_API_KEY"
 enable_thinking = false
 timeout_seconds = 600.0
+context_window_tokens = 262144
 max_output_tokens = 8192
 temperature = 0.1
 max_retries = 4

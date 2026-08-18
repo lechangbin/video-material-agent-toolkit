@@ -57,7 +57,7 @@ python <this-skill-directory>/scripts/resolve_semvideo.py
 ```
 
 The resolver does not rely on the Agent's isolated `PATH`; it validates
-`cli_version` `0.1.3`, workspace Schema max `1`, job Schema max `1`, and
+`cli_version` `0.1.4`, workspace Schema max `1`, job Schema max `1`, and
 `skill_protocol_version` `1`. If the user supplies a CLI location, pass it through
 the non-secret `SEMVIDEO_CLI` environment variable.
 
@@ -92,6 +92,20 @@ Never edit `config.toml` directly. If the paths are unknown, stop and ask the us
 to install or identify the certified runtime. Do not mutate the Agent's `PATH`.
 Doctor must confirm `-fps_mode`, `libx264`, and `aac` before processing or
 exporting.
+
+When the user selects Agnes, apply its complete supported Provider Profile through
+the public CLI, then rerun the context gate:
+
+```powershell
+<semvideo> config set-llm-provider agnes --workspace <root> --json
+```
+
+This selects `agnes-2.5-flash`, the official OpenAI-compatible endpoint,
+`AGNES_API_KEY`, a 512K total context with an 8K output reservation, and an LLM
+concurrency ceiling of 2. Accept the command's structured result as authoritative;
+keep the credential in the process environment and pass only its presence through
+Doctor. To return to the repository baseline, run the same command with
+`siliconflow`; do not reconstruct either profile by editing TOML.
 
 ## Process a video
 

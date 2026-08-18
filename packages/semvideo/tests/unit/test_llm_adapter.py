@@ -60,6 +60,78 @@ def test_llm_adapter_parses_structured_segmentation() -> None:
     assert result.provider_attempts[0]["usage"]["total_tokens"] == 30
 
 
+def test_agnes_adapter_uses_openai_endpoint_without_siliconflow_options() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == (
+            "https://apihub.agnes-ai.com/v1/chat/completions"
+        )
+        payload = json.loads(request.content)
+        assert payload["model"] == "agnes-2.5-flash"
+        assert payload["max_tokens"] == 8192
+        assert "enable_thinking" not in payload
+        return httpx.Response(
+            200,
+            request=request,
+            headers={"x-request-id": "agnes-trace-1"},
+            json={
+                "choices": [{"message": {"content": "{}"}}],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 2,
+                    "total_tokens": 12,
+                },
+            },
+        )
+
+    config = LlmConfig(
+        provider="agnes",
+        base_url="https://apihub.agnes-ai.com/v1",
+        model="agnes-2.5-flash",
+        credential_env="AGNES_API_KEY",
+        context_window_tokens=524288,
+    )
+    adapter = OpenAICompatibleLlm(
+        config,
+        "secret",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    result = adapter.chat([{"role": "user", "content": "x"}])
+
+    assert result.trace_id == "agnes-trace-1"
+    assert result.response_headers == {"x-request-id": "agnes-trace-1"}
+
+
+def test_adapter_rejects_reported_usage_above_context_window() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "choices": [{"message": {"content": "{}"}}],
+                "usage": {"total_tokens": 524289},
+            },
+        )
+
+    adapter = OpenAICompatibleLlm(
+        LlmConfig(
+            provider="agnes",
+            base_url="https://apihub.agnes-ai.com/v1",
+            model="agnes-2.5-flash",
+            credential_env="AGNES_API_KEY",
+            context_window_tokens=524288,
+        ),
+        "secret",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    with pytest.raises(SemvideoError) as raised:
+        adapter.chat([{"role": "user", "content": "x"}])
+
+    assert raised.value.payload.code == "provider_context_usage_invalid"
+    assert raised.value.payload.recovery.value == "report_bug"
+
+
 def test_llm_adapter_classifies_rate_limit_without_sleeping() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(429, request=request, json={"message": "rate limited"})

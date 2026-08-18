@@ -9,6 +9,7 @@ import sys
 from typing import Any
 
 from semvideo.adapters.ffmpeg import FfmpegAdapter
+from semvideo.adapters.profiles import get_provider_profile
 from semvideo.application.workspace import WorkspacePaths
 from semvideo.config import load_workspace_config
 from semvideo.infrastructure.io import (
@@ -21,6 +22,7 @@ from semvideo.infrastructure.locks import exclusive_file_lock
 
 def run_doctor(workspace: WorkspacePaths) -> dict[str, Any]:
     config = load_workspace_config(workspace.data)
+    provider_profile = get_provider_profile(config.llm.provider)
     cleanup_warnings: list[dict[str, str]] = []
     ffmpeg_capabilities = FfmpegAdapter(
         ffmpeg_path=config.media.ffmpeg_path,
@@ -118,6 +120,14 @@ def run_doctor(workspace: WorkspacePaths) -> dict[str, Any]:
         "model": {
             "provider": config.llm.provider,
             "model": config.llm.model,
+            "context_window_tokens": config.llm.context_window_tokens,
+            "max_input_tokens": config.llm.max_input_tokens,
+            "max_output_tokens": config.llm.max_output_tokens,
+            "max_concurrency": (
+                provider_profile.max_concurrency
+                if provider_profile is not None
+                else None
+            ),
             "paid_request_sent": False,
         },
     }

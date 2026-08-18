@@ -11,7 +11,7 @@
 - 四个遵循开放 [Agent Skills 规范](https://agentskills.io/) 的 Skills，用于把搜索、
   理解、Top-K 选择和有界补搜编排为可追踪工作流。
 
-当前工具包发布为 `v0.2.0`：Material Collector `0.2.0`，Semvideo `0.1.3`。
+当前工具包发布为 `v0.2.0`：Material Collector `0.2.0`，Semvideo `0.1.4`。
 支持 Windows x64 和 CPython `>=3.14.6,<3.15`。
 Docker 部署另支持 Linux/amd64 容器，并通过本机 noVNC 页面完成交互式平台登录。
 
@@ -156,7 +156,7 @@ FFmpeg 构建，请自行核对该构建的许可证和编码器配置。
 
 ```text
 video_material_collector-0.2.0-py3-none-any.whl
-semvideo-0.1.3-py3-none-any.whl
+semvideo-0.1.4-py3-none-any.whl
 SHA256SUMS.txt
 ```
 
@@ -175,7 +175,7 @@ uv tool install --python 3.14 `
   .\video-toolkit-release\video_material_collector-0.2.0-py3-none-any.whl
 
 python -m pip install --user `
-  .\video-toolkit-release\semvideo-0.1.3-py3-none-any.whl
+  .\video-toolkit-release\semvideo-0.1.4-py3-none-any.whl
 ```
 
 或者运行随 Release 下载的安装脚本；脚本会先验证两个 wheel 的 SHA-256：
@@ -240,6 +240,16 @@ API Key 只通过目标机器的环境变量或安全凭据机制提供，不要
 $env:SEMVIDEO_API_KEY = '<在当前终端注入密钥>'
 
 semvideo init C:\video-workspace --json
+semvideo doctor --workspace C:\video-workspace --json
+```
+
+如需改用 Agnes 2.5 Flash，先通过公开命令选择固定的 512K Provider Profile，
+再从进程环境提供对应凭据：
+
+```powershell
+semvideo config set-llm-provider agnes `
+  --workspace C:\video-workspace --json
+$env:AGNES_API_KEY = '<在当前终端注入密钥>'
 semvideo doctor --workspace C:\video-workspace --json
 ```
 
