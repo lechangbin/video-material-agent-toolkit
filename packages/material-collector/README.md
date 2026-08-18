@@ -33,7 +33,9 @@ Chrome，需要登录时打开所选浏览器的有头窗口，随后固定使�
 `ffprobe` 再次校验实际分辨率。跨平台版本会分别下载，再由本地音频与视频指纹确认
 同作品并按 `Bilibili > 抖音 > 小红书` 标记主来源；其他版本仍完整保留。全部发现
 来源都会写入会话的 `collection-result.json`；代理媒体以 SHA-256 内容寻址保存在
-长期素材工作区，后续恢复不会重复已提交阶段。
+长期素材工作区，后续恢复不会重复已提交阶段。指纹去重完成后，每个作品组只为主来源
+发布按来源标题和分段标题命名的会话级可读入口；回退来源仍保留内容寻址资产，但不暴露
+第二个标题入口。按需取得的高质量媒体遵循同一规则。
 
 搜索浏览器默认隐藏。`run` 或 `resume` 可为当前一次执行传入
 `--show-search-browsers`，并发显示每个平台带有 `Material Collector · <platform>`
@@ -157,7 +159,21 @@ Agent 对照原始文案判断是否需要有界补搜。它只通过版本化�
           query-plans.json
   assets/
     sha256/
+  materials/
+    by-session/
+      <session-id>/
+        <source-title>__<platform>__<source-id>/
+          low-proxy/
+            <media-unit-title>__<media-unit-id>.<container>
+          high-quality/
+            <media-unit-title>__<media-unit-id>.<container>
 ```
+
+`assets/sha256/` 是权威工作区资产，`materials/by-session/` 只是方便人工浏览和剪辑工具
+选择文件的标题素材视图。标题视图优先使用硬链接，无法创建硬链接时使用经过 SHA-256
+复核的原子复制；它不会改变或替代内容寻址资产。`collection-result.json` 中每个已下载
+资产的 `relative_path` 指向权威资产，主来源额外通过 `display_relative_path` 指向标题
+入口，回退来源该字段为 `null`。标题更新会发布新入口并保留旧文件；清理由用户显式完成。
 
 ## 当前状态
 

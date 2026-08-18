@@ -1139,11 +1139,12 @@ class CollectionWorkflow:
                     manifest,
                     persist_operations=False,
                 )
-                self._manifest.replace_work_groups(
+                refreshed = self._manifest.replace_work_groups(
                     lease.workspace,
                     lease.session_id,
                     groups,
                 )
+                self._publish_primary_title_views(lease, refreshed)
                 return lease, issues
             return lease, ()
 
@@ -1158,11 +1159,12 @@ class CollectionWorkflow:
                 manifest,
                 persist_operations=True,
             )
-            self._manifest.replace_work_groups(
+            grouped = self._manifest.replace_work_groups(
                 lease.workspace,
                 lease.session_id,
                 groups,
             )
+            self._publish_primary_title_views(lease, grouped)
             next_stage = self._runtime.complete_stage(
                 lease,
                 attempt,
@@ -1177,6 +1179,39 @@ class CollectionWorkflow:
         except (CollectorError, OSError) as error:
             self._runtime.fail_stage(lease, attempt, error=_error_payload(error))
             raise
+
+    def _publish_primary_title_views(
+        self,
+        lease: ExecutionLease,
+        manifest: CollectionResult,
+    ) -> CollectionResult:
+        asset_store = self._asset_stores.for_workspace(lease.workspace)
+        current = manifest
+        for candidate in manifest.candidates:
+            for unit in candidate.media_units:
+                for asset in (unit.proxy_asset, unit.high_quality_asset):
+                    if asset is None:
+                        continue
+                    if unit.source_role == "primary":
+                        published = asset_store.publish_title_view(
+                            asset,
+                            session_id=lease.session_id,
+                            platform=candidate.platform,
+                            source_id=candidate.source_id,
+                            source_title=candidate.title,
+                            media_unit_title=unit.title,
+                        )
+                    else:
+                        published = asset.model_copy(
+                            update={"display_relative_path": None}
+                        )
+                    if published != asset:
+                        current = self._manifest.record_asset(
+                            lease.workspace,
+                            lease.session_id,
+                            published,
+                        )
+        return current
 
     async def _build_work_groups(
         self,

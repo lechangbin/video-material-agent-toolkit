@@ -78,5 +78,12 @@ Use the final JSON as the authority:
 - `status=integration_required`: stop at the declared external integration boundary.
 - `status=cancelled|completed`: stop; do not resume a terminal session.
 
+When presenting downloaded material, use each primary asset's `display_relative_path` as the
+human-readable title entry when it is non-null. Keep `relative_path` as the authoritative
+content-addressed asset for integrity checks and downstream machine processing. A fallback source
+intentionally has `display_relative_path: null`; do not invent or rename another title entry.
+`named_view_publish_failed` is retryable: resume the same session through the bundled runner and do
+not start a replacement download.
+
 Use `select-video-segments` only for the isolated Top-K decision requested after external video
 understanding. Do not move collection execution into that Skill.

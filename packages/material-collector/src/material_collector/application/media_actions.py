@@ -142,6 +142,8 @@ class MediaApplication:
                 "Rejected media cannot be fetched.",
                 details={"media_unit_id": media_unit_id},
             )
+        normalized_workspace = Path(result.workspace_path)
+        asset_store = self._asset_stores.for_workspace(normalized_workspace)
         if media_unit.high_quality_asset is not None:
             asset = media_unit.high_quality_asset
         else:
@@ -151,10 +153,6 @@ class MediaApplication:
                     "No media fetcher is configured for this platform.",
                     details={"platform": candidate.platform.value},
                 )
-            normalized_workspace = Path(result.workspace_path)
-            asset_store = self._asset_stores.for_workspace(
-                normalized_workspace
-            )
             temporary = asset_store.allocate_staging_path(
                 session_id,
                 media_unit.media_unit_id,
@@ -184,6 +182,22 @@ class MediaApplication:
                     asset_store.discard_staging(temporary)
                 except CollectorError:
                     pass
+        if media_unit.source_role == "primary":
+            published = asset_store.publish_title_view(
+                asset,
+                session_id=session_id,
+                platform=candidate.platform,
+                source_id=candidate.source_id,
+                source_title=candidate.title,
+                media_unit_title=media_unit.title,
+            )
+            if published != asset:
+                asset = published
+                result = self._manifest.record_asset(
+                    normalized_workspace,
+                    session_id,
+                    asset,
+                )
         return HighQualityFetchView(
             session_id=session_id,
             workspace_path=result.workspace_path,

@@ -33,7 +33,10 @@ from material_collector.core.media import (
     SearchBatch,
     SearchRequest,
 )
-from material_collector.infrastructure.assets import WorkspaceAssetStoreFactory
+from material_collector.infrastructure.assets import (
+    WorkspaceAssetStore,
+    WorkspaceAssetStoreFactory,
+)
 from material_collector.infrastructure.platforms.errors import PlatformAdapterError
 from material_collector.infrastructure.session_runtime_store import (
     SqliteSessionRuntime as SessionRuntime,
@@ -792,6 +795,169 @@ async def test_bilibili_only_scope_never_contacts_other_platforms(
 
 
 @pytest.mark.asyncio
+async def test_primary_proxy_is_published_through_title_material_view(
+    tmp_path: Path,
+) -> None:
+    workspace, session_id = _create_session(
+        tmp_path,
+        platform_scope=(Platform.BILIBILI,),
+    )
+    adapter = _Platform(
+        Platform.BILIBILI,
+        title='城市：更新/完整? "秋季"',
+    )
+    adapters = {
+        platform: adapter if platform is Platform.BILIBILI else _Platform(platform)
+        for platform in PLATFORM_ORDER
+    }
+    workflow = _make_workflow(
+        _Authentication(),
+        adapters,
+        SessionRuntime(lease_ttl_seconds=900),
+    )
+
+    await workflow.run(workspace, session_id)
+
+    manifest = workflow._manifest.export(workspace, session_id)
+    asset = manifest.candidates[0].media_units[0].proxy_asset
+    assert asset is not None
+    assert asset.display_relative_path is not None
+    display = workspace / asset.display_relative_path
+    assert display.is_file()
+    assert display.read_bytes() == (workspace / asset.relative_path).read_bytes()
+    assert display.parts[-3] == (
+        "城市_更新_完整_ _秋季___bilibili__bilibili_s--31c56064"
+    )
+    assert display.parts[-2] == "low-proxy"
+    assert display.name == (
+        "城市_更新_完整_ _秋季___bilibili_s--00e934af.mp4"
+    )
+    result_path = (
+        workspace
+        / ".material-collector"
+        / "sessions"
+        / session_id
+        / "collection-result.json"
+    )
+    payload = json.loads(result_path.read_text(encoding="utf-8"))
+    exported_asset = payload["candidates"][0]["media_units"][0]["proxy_asset"]
+    assert exported_asset["relative_path"] == asset.relative_path
+    assert exported_asset["display_relative_path"] == asset.display_relative_path
+
+
+@pytest.mark.asyncio
+async def test_multi_part_source_uses_one_source_folder_and_unit_titles(
+    tmp_path: Path,
+) -> None:
+    workspace, session_id = _create_session(
+        tmp_path,
+        platform_scope=(Platform.BILIBILI,),
+    )
+
+    class MultiPartPlatform(_Platform):
+        async def resolve(
+            self,
+            source_id: str,
+            canonical_url: str,
+            context: PlatformContext,
+        ) -> ResolvedSource:
+            self.resolve_count += 1
+            return ResolvedSource(
+                candidate_id=f"bilibili:{source_id}",
+                media_units=tuple(
+                    MediaUnit(
+                        platform=Platform.BILIBILI,
+                        source_id=source_id,
+                        media_unit_id=f"{source_id}_part_{index}",
+                        canonical_url=f"{canonical_url}?p={index}",
+                        title=title,
+                        duration_seconds=30,
+                        part_index=index,
+                    )
+                    for index, title in enumerate(("宫殿全景", "枫叶特写"), start=1)
+                ),
+            )
+
+    adapter = MultiPartPlatform(Platform.BILIBILI, title="辽东秋色合集")
+    adapters = {
+        platform: adapter if platform is Platform.BILIBILI else _Platform(platform)
+        for platform in PLATFORM_ORDER
+    }
+    workflow = _make_workflow(
+        _Authentication(),
+        adapters,
+        SessionRuntime(lease_ttl_seconds=900),
+    )
+
+    await workflow.run(workspace, session_id)
+
+    files = list(
+        (workspace / "materials" / "by-session" / session_id).rglob("*.mp4")
+    )
+    assert len(files) == 2
+    assert len({path.parts[-3] for path in files}) == 1
+    assert files[0].parts[-3].startswith("辽东秋色合集__bilibili__")
+    assert {path.name.split("__", 1)[0] for path in files} == {
+        "宫殿全景",
+        "枫叶特写",
+    }
+
+
+@pytest.mark.asyncio
+async def test_title_view_publish_failure_resumes_without_redownloading(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace, session_id = _create_session(
+        tmp_path,
+        platform_scope=(Platform.BILIBILI,),
+    )
+    adapter = _Platform(Platform.BILIBILI, title="可恢复命名")
+    adapters = {
+        platform: adapter if platform is Platform.BILIBILI else _Platform(platform)
+        for platform in PLATFORM_ORDER
+    }
+    workflow = _make_workflow(
+        _Authentication(),
+        adapters,
+        SessionRuntime(lease_ttl_seconds=900),
+    )
+    original = WorkspaceAssetStore.publish_title_view
+    attempts = 0
+
+    def fail_once(
+        store: WorkspaceAssetStore,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise CollectorError(
+                "named_view_publish_failed",
+                "temporary publish failure",
+                details={"retryable": True},
+            )
+        return original(store, *args, **kwargs)
+
+    monkeypatch.setattr(WorkspaceAssetStore, "publish_title_view", fail_once)
+
+    with pytest.raises(CollectorError) as captured:
+        await workflow.run(workspace, session_id)
+
+    assert captured.value.code == "named_view_publish_failed"
+    assert adapter.fetch_count == 1
+    result = await workflow.run(workspace, session_id)
+
+    assert result.proxies_ready == 1
+    assert adapter.fetch_count == 1
+    manifest = workflow._manifest.export(workspace, session_id)
+    asset = manifest.candidates[0].media_units[0].proxy_asset
+    assert asset is not None
+    assert asset.display_relative_path is not None
+
+
+@pytest.mark.asyncio
 async def test_workflow_uses_frozen_request_timeout_for_every_platform_call(
     tmp_path: Path,
 ) -> None:
@@ -920,6 +1086,16 @@ async def test_same_author_and_title_downloads_every_platform_before_fingerprint
         )
         == 1
     )
+    assets = [
+        unit.proxy_asset
+        for candidate in manifest.candidates
+        for unit in candidate.media_units
+    ]
+    assert sum(
+        asset is not None and asset.display_relative_path is not None
+        for asset in assets
+    ) == 1
+    assert len(list((workspace / "materials" / "by-session" / session_id).rglob("*.mp4"))) == 1
     comparisons = fingerprints.compare_count
 
     await workflow.run(workspace, session_id)

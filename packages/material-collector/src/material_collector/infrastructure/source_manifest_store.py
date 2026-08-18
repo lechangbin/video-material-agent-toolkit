@@ -274,16 +274,18 @@ class SqliteSourceManifestStore:
                         asset_id,
                         sha256,
                         relative_path,
+                        display_relative_path,
                         size_bytes,
                         container,
                         duration_seconds,
                         width,
                         height
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(media_unit_id, quality) DO UPDATE SET
                         asset_id = excluded.asset_id,
                         sha256 = excluded.sha256,
                         relative_path = excluded.relative_path,
+                        display_relative_path = excluded.display_relative_path,
                         size_bytes = excluded.size_bytes,
                         container = excluded.container,
                         duration_seconds = excluded.duration_seconds,
@@ -296,6 +298,7 @@ class SqliteSourceManifestStore:
                         asset.asset_id,
                         asset.sha256,
                         asset.relative_path,
+                        asset.display_relative_path,
                         asset.size_bytes,
                         asset.container,
                         asset.duration_seconds,
@@ -557,6 +560,7 @@ def _ensure_manifest_schema(connection: sqlite3.Connection) -> None:
             asset_id TEXT NOT NULL,
             sha256 TEXT NOT NULL,
             relative_path TEXT NOT NULL,
+            display_relative_path TEXT,
             size_bytes INTEGER NOT NULL,
             container TEXT,
             duration_seconds REAL,
@@ -842,6 +846,9 @@ def _asset_from_row(row: sqlite3.Row) -> AssetRecord:
         asset_id=str(row["asset_id"]),
         sha256=str(row["sha256"]),
         relative_path=str(row["relative_path"]),
+        display_relative_path=None
+        if row["display_relative_path"] is None
+        else str(row["display_relative_path"]),
         size_bytes=int(row["size_bytes"]),
         quality=MediaQuality(str(row["quality"])),
         media_unit_id=str(row["media_unit_id"]),

@@ -105,6 +105,10 @@ python scripts/prepare_understanding_batch.py `
 The generated `video-material-understanding-batch/v2` copies the workflow's frozen
 `platform_scope`. Every collection result must declare that exact scope, and every
 candidate platform must belong to it; later round planning rechecks the same field.
+Collector assets may also expose a human-readable `display_relative_path` for the work-group
+primary. The bridge must continue resolving and hashing `relative_path`, which is the authoritative
+content-addressed proxy; `display_relative_path` is an optional editing view and is null for
+fallback sources.
 
 For every batch item without a job mapping:
 

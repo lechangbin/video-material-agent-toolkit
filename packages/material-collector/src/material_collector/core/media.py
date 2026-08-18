@@ -161,6 +161,7 @@ class AssetRecord(_Record):
     asset_id: str
     sha256: str
     relative_path: str
+    display_relative_path: str | None = None
     size_bytes: int = Field(ge=0)
     quality: MediaQuality
     media_unit_id: str

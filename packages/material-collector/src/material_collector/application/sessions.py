@@ -17,7 +17,7 @@ from material_collector.core.errors import SessionStateError
 from material_collector.core.media import BrowserChannel, Platform
 
 OUTPUT_SCHEMA_VERSION = "1.0"
-SESSION_SCHEMA_VERSION = 4
+SESSION_SCHEMA_VERSION = 5
 SUPPORTED_SESSION_SCHEMA_VERSIONS = frozenset({SESSION_SCHEMA_VERSION})
 CONTROL_DIRECTORY = ".material-collector"
 SESSIONS_DIRECTORY = "sessions"

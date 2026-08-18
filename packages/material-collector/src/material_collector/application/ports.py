@@ -110,6 +110,17 @@ class AssetStore(Protocol):
 
     def import_fetch(self, fetched: FetchResult) -> AssetRecord: ...
 
+    def publish_title_view(
+        self,
+        asset: AssetRecord,
+        *,
+        session_id: str,
+        platform: Platform,
+        source_id: str,
+        source_title: str,
+        media_unit_title: str,
+    ) -> AssetRecord: ...
+
     def resolve(self, asset: AssetRecord) -> Path: ...
 
     def allocate_staging_path(
