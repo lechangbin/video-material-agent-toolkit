@@ -126,9 +126,12 @@ compose.yaml
 winget install --id Python.Python.3.14 --exact
 winget install --id astral-sh.uv --exact
 winget install --id OpenJS.NodeJS.LTS --exact
-winget install --id Google.Chrome --exact
 winget install --id Gyan.FFmpeg --exact
 ```
+
+Windows 原生模式默认使用 `--browser-channel auto`，按 Microsoft Edge、Google Chrome
+的顺序选择本机浏览器；系统已有 Edge 时无需额外安装 Chrome。若要固定 Chrome，可另行
+执行 `winget install --id Google.Chrome --exact` 并传入 `--browser-channel chrome`。
 
 重新打开 PowerShell，确认：
 
@@ -176,7 +179,8 @@ python -m pip install --user `
 
 ```powershell
 .\video-toolkit-release\install-tools.ps1 `
-  -ReleaseDirectory .\video-toolkit-release
+  -ReleaseDirectory .\video-toolkit-release `
+  -BrowserChannel auto
 ```
 
 验证：

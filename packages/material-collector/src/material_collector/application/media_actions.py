@@ -18,6 +18,7 @@ from material_collector.core.manifest import (
     ManifestMediaUnit,
 )
 from material_collector.core.media import (
+    BrowserChannel,
     FetchRequest,
     MediaQuality,
     MediaUnit,
@@ -131,6 +132,7 @@ class MediaApplication:
         media_unit_id: str,
         *,
         auth_profile: str,
+        browser_channel: BrowserChannel,
         request_timeout_seconds: int = 30,
     ) -> HighQualityFetchView:
         result = self._manifest.export(workspace, session_id)
@@ -167,6 +169,7 @@ class MediaApplication:
                     ),
                     PlatformContext(
                         auth_profile=auth_profile,
+                        browser_channel=browser_channel,
                         request_timeout_seconds=request_timeout_seconds,
                     ),
                 )

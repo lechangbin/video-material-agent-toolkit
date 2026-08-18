@@ -33,7 +33,7 @@ from material_collector.core.errors import (
     SessionStateError,
     WorkspaceError,
 )
-from material_collector.core.media import Platform
+from material_collector.core.media import BrowserChannel, Platform
 from material_collector.infrastructure.assets import WorkspaceAssetStoreFactory
 from material_collector.infrastructure.authentication import (
     PlaywrightAuthenticationGateway,
@@ -200,6 +200,8 @@ def _exit_code_for(error: CollectorError) -> int:
         "auth_profile_busy",
         "auth_desktop_unavailable",
         "auth_login_timeout",
+        "browser_channel_exhausted",
+        "browser_channel_failed",
         "platform_timeout",
         "platform_navigation_timeout",
         "platform_response_timeout",
@@ -416,6 +418,14 @@ def run_command(
             help="Local authentication profile identifier.",
         ),
     ] = "default",
+    browser_channel: Annotated[
+        BrowserChannel,
+        typer.Option(
+            "--browser-channel",
+            case_sensitive=False,
+            help="Native browser channel: auto prefers Edge, then Chrome.",
+        ),
+    ] = BrowserChannel.AUTO,
     auth_wait_seconds: Annotated[
         int,
         typer.Option(
@@ -448,6 +458,7 @@ def run_command(
             max_rounds=max_rounds,
             max_videos=max_videos,
             auth_profile=auth_profile,
+            browser_channel=browser_channel,
             auth_wait_seconds=auth_wait_seconds,
             request_timeout_seconds=request_timeout_seconds,
         )
@@ -554,10 +565,16 @@ def auth_status_command(
         str,
         typer.Option("--auth-profile", help="Local authentication profile."),
     ] = "default",
+    browser_channel: Annotated[
+        BrowserChannel,
+        typer.Option("--browser-channel", case_sensitive=False),
+    ] = BrowserChannel.CHROME,
 ) -> None:
     """Probe one platform without opening an interactive login."""
 
-    _execute_async(lambda: _authentication().probe(platform, auth_profile))
+    _execute_async(
+        lambda: _authentication().probe(platform, auth_profile, browser_channel)
+    )
 
 
 @auth_app.command("login")
@@ -571,20 +588,29 @@ def auth_login_command(
         int,
         typer.Option("--auth-wait-seconds", min=1),
     ] = 600,
+    browser_channel: Annotated[
+        BrowserChannel,
+        typer.Option("--browser-channel", case_sensitive=False),
+    ] = BrowserChannel.AUTO,
 ) -> None:
     """Ensure one platform is authenticated, opening a browser when needed."""
 
     async def operation() -> dict[str, Any]:
-        probes = await _authentication().ensure_authenticated(
+        selection = await _authentication().ensure_authenticated(
             (platform,),
             auth_profile,
             auth_wait_seconds,
+            browser_channel=browser_channel,
         )
         return {
             "schema_version": "1.0",
             "status": "authenticated",
             "auth_profile": auth_profile,
-            "platforms": [probe.model_dump(mode="json", exclude_none=False) for probe in probes],
+            "browser_channel": selection.browser_channel.value,
+            "platforms": [
+                probe.model_dump(mode="json", exclude_none=False)
+                for probe in selection.probes
+            ],
             "action_required": None,
         }
 
@@ -599,16 +625,26 @@ def auth_logout_command(
     ],
     confirm: Annotated[str, typer.Option("--confirm")],
     auth_profile: Annotated[str, typer.Option("--auth-profile")] = "default",
+    browser_channel: Annotated[
+        BrowserChannel,
+        typer.Option("--browser-channel", case_sensitive=False),
+    ] = BrowserChannel.CHROME,
 ) -> None:
     """Delete one platform profile after explicit platform confirmation."""
 
     async def operation() -> dict[str, Any]:
-        await _authentication().logout(platform, auth_profile, confirm)
+        await _authentication().logout(
+            platform,
+            auth_profile,
+            confirm,
+            browser_channel,
+        )
         return {
             "schema_version": "1.0",
             "status": "logged_out",
             "auth_profile": auth_profile,
             "platform": platform.value,
+            "browser_channel": browser_channel.value,
             "action_required": None,
         }
 
@@ -700,16 +736,22 @@ def media_fetch_high_quality_command(
             session_id,
             media_unit_id,
         )
+        if session.selected_browser_channel is None:
+            raise SessionStateError(
+                "The session has not frozen a successful browser channel."
+            )
         await _authentication().ensure_authenticated(
             (platform,),
             session.constraints.auth_profile,
             session.constraints.auth_wait_seconds,
+            browser_channel=session.selected_browser_channel,
         )
         return await application.fetch_high_quality(
             workspace,
             session_id,
             media_unit_id,
             auth_profile=session.constraints.auth_profile,
+            browser_channel=session.selected_browser_channel,
             request_timeout_seconds=session.constraints.request_timeout_seconds,
         )
 

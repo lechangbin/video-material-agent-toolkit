@@ -25,6 +25,7 @@ from material_collector.core.errors import (
     SessionVersionError,
     WorkspaceError,
 )
+from material_collector.core.media import BrowserChannel
 from material_collector.infrastructure.session_store import SqliteSessionStore
 
 FIXED_NOW = datetime(2026, 7, 29, 12, 0, tzinfo=UTC)
@@ -189,6 +190,16 @@ def test_application_accepts_a_store_adapter_without_touching_files(
                 f"unexpected frozen read: {received_workspace} {session_id}"
             )
 
+        def freeze_browser_channel(
+            self,
+            received_workspace: Path,
+            session_id: str,
+            channel: BrowserChannel,
+        ) -> SessionView:
+            raise AssertionError(
+                f"unexpected browser freeze: {received_workspace} {session_id} {channel}"
+            )
+
     application = SessionApplication(store=InMemorySessionStore())
 
     assert application.create_session(request) is session
@@ -215,6 +226,8 @@ def test_create_session_freezes_documents_and_initializes_sqlite(
     assert created.constraints.max_rounds == 4
     assert created.constraints.auth_profile == "editing"
     assert created.constraints.request_timeout_seconds == 45
+    assert created.constraints.browser_channel is BrowserChannel.AUTO
+    assert created.selected_browser_channel is None
     assert [segment.status for segment in created.segments] == ["planned", "planned"]
     assert input_snapshot.is_file()
     assert plans_snapshot.is_file()
@@ -229,11 +242,37 @@ def test_create_session_freezes_documents_and_initializes_sqlite(
     assert loaded.input_sha256 == created.input_sha256
     assert loaded.constraints.request_timeout_seconds == 45
     assert json.loads(input_snapshot.read_text(encoding="utf-8"))["schema_version"] == "1.0"
-
     with sqlite3.connect(session_dir / "session.sqlite3") as connection:
         assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
 
+
+def test_session_freezes_the_first_successful_browser_channel(tmp_path: Path) -> None:
+    workspace = tmp_path / "materials"
+    application = deterministic_application("ses_browser_001")
+    created = application.create_session(create_request(tmp_path, workspace))
+
+    frozen = application.freeze_browser_channel(
+        workspace,
+        created.session_id,
+        BrowserChannel.EDGE,
+    )
+
+    assert frozen.selected_browser_channel is BrowserChannel.EDGE
+    assert (
+        application.freeze_browser_channel(
+            workspace,
+            created.session_id,
+            BrowserChannel.EDGE,
+        ).selected_browser_channel
+        is BrowserChannel.EDGE
+    )
+    with pytest.raises(SessionStateError):
+        application.freeze_browser_channel(
+            workspace,
+            created.session_id,
+            BrowserChannel.CHROME,
+        )
 
 def test_invalid_input_does_not_create_workspace_or_session(tmp_path: Path) -> None:
     workspace = tmp_path / "materials"

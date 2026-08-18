@@ -43,7 +43,7 @@ Skill 中复制文本规范化、安全 ID、引用和去重规则。
 ### 会话生命周期
 
 ```text
-material-collector run --workspace <path> --input <path> --query-plans <path> [--max-rounds <n>] [--max-videos <n>] [--auth-profile <id>] [--auth-wait-seconds <seconds>] [--request-timeout-seconds <seconds>] [--progress-format jsonl|text]
+material-collector run --workspace <path> --input <path> --query-plans <path> [--max-rounds <n>] [--max-videos <n>] [--auth-profile <id>] [--browser-channel auto|edge|chrome] [--auth-wait-seconds <seconds>] [--request-timeout-seconds <seconds>] [--progress-format jsonl|text]
 material-collector status --workspace <path> --session-id <id>
 material-collector resume --workspace <path> --session-id <id> [--progress-format jsonl|text]
 material-collector cancel --workspace <path> --session-id <id>
@@ -56,11 +56,14 @@ material-collector sessions list --workspace <path>
 - QueryPlan 字段、平台覆盖和核心规则边界以 `docs/design/query-plan-contract.md` 为准。
 - `max_rounds` 与 `max_videos` 通过运行参数或稳定配置提供，并将生效值固化进会话。
 - `--auth-profile` 选择操作系统用户持有的本机认证配置，默认值为 `default`；会话只固化该标识，不复制凭据或本机浏览器目录。
+- `--browser-channel` 默认值为 `auto`。Windows 原生执行按 Edge、Chrome 顺序选择；
+  显式 `edge` 或 `chrome` 不跨通道回退。首次成功通道固化进会话，`resume` 只复用该
+  通道。非 Windows 与 Docker 执行把 `auto` 固定解析为 Chrome。
 - `--auth-wait-seconds` 配置有头登录等待时间，默认值为 `600`；生效值固化进会话，`resume` 不临时改变它。
 - `--request-timeout-seconds` 配置单个平台网络请求的等待上限，默认值为 `30`；
   生效值固化进会话，`resume` 始终继续使用冻结值，不能临时覆盖。
-  会话数据库 schema `2` 新增该字段；schema `1` 会话在只读查询时按 `30` 展示，
-  首次恢复执行时原地迁移并冻结该兼容值。
+  会话数据库 schema `2` 新增该字段；schema `3` 新增请求和已选浏览器通道。
+  较早会话在只读查询和迁移时兼容为固定 Chrome。
 - `run` 和 `resume` 的 `--progress-format` 只控制当前 CLI 进程写入 `stderr`
   的进度表现形式，不属于业务约束，也不固化进会话；默认值为 `jsonl`，
   `text` 用于人类直接观察。
@@ -78,15 +81,15 @@ material-collector sessions list --workspace <path>
 ### 登录态
 
 ```text
-material-collector auth status --auth-profile <id> --platform <platform>
-material-collector auth login --auth-profile <id> --platform <platform> [--auth-wait-seconds <seconds>]
-material-collector auth logout --auth-profile <id> --platform <platform> --confirm <platform>
+material-collector auth status --auth-profile <id> --platform <platform> [--browser-channel edge|chrome]
+material-collector auth login --auth-profile <id> --platform <platform> [--browser-channel auto|edge|chrome] [--auth-wait-seconds <seconds>]
+material-collector auth logout --auth-profile <id> --platform <platform> --confirm <platform> [--browser-channel edge|chrome]
 ```
 
 - `auth status` 和 `auth login` 不要求 `--workspace`，因为本机认证配置属于操作系统用户并可跨素材工作区复用。
 - `--auth-profile` 默认值为 `default`。
 - `auth status` 使用平台只读认证探针，并以结构化字段返回 `valid`、`invalid`、`challenge_required` 或 `probe_failed`；不得仅凭 Cookie 是否存在判断。
-- `run` 和 `resume` 在每轮多平台并发搜索前预检全部目标平台；任一登录态不可用时，当前命令自动打开有头 Chrome 等待人工登录，通过验证后直接继续，无需用户另行调用认证命令。
+- `run` 和 `resume` 在每轮多平台并发搜索前预检全部目标平台；任一登录态不可用时，当前命令自动打开所选通道的有头浏览器等待人工登录，通过验证后直接继续，无需用户另行调用认证命令。
 - 多个平台需要登录时固定按 `Bilibili → 抖音 → 小红书` 串行处理，一次只打开一个有头浏览器。
 - 认证进度至少包含 `authentication_probe_started`、
   `authentication_probe_completed`、`authentication_login_window_opened`、
@@ -100,7 +103,7 @@ material-collector auth logout --auth-profile <id> --platform <platform> --confi
 - 预检通过后若平台返回 `authentication_lost`，当前命令等待其他平台到达安全提交点，自动重新认证一次并只补跑该平台未完成请求；同一平台同一轮再次失效时才持久化为 `auth_required`。
 - `auth login` 仅用于在采集任务之外主动更新本机认证配置，不是正常搜索流程的必需步骤。
 - 登录默认等待 `600` 秒。无桌面、浏览器被关闭或达到等待上限时，本次有头浏览器关闭且会话持久化为 `auth_required`；调用方随后只需执行 `resume`，由恢复流程再次自动预检和打开浏览器。
-- 任何需要打开浏览器配置的命令都要取得“认证配置标识 + 平台”跨进程锁；第二个进程最多等待 `60` 秒。
+- 任何需要打开浏览器配置的命令都要取得“认证配置标识 + 浏览器通道 + 平台”跨进程锁；第二个进程最多等待 `60` 秒。
 - 等待锁超时返回错误码 `auth_profile_busy` 和退出码 `30`。会话状态保持在原业务阶段，不增加轮次、不占用视频名额，也不允许通过删除磁盘锁文件抢占。
 - 会话状态和输出只记录认证配置标识、平台、规范化探针状态及验证时间；账号、昵称、Cookie 和探针原始响应不得进入日志或产物。
 - 同一认证配置切换到另一个有效账号不形成会话阻塞，第一阶段不冻结或比较平台账号身份。
@@ -161,5 +164,8 @@ material-collector media fetch-hq --workspace <path> --session-id <id> --media-u
 
 - `cancel` 成功提交并确认取消请求时返回 `0`；正在运行的 `run` 或 `resume` 观察到该请求并正常停止时返回 `21`。
 - `auth_profile_busy` 属于退出码 `30` 的可恢复技术错误；会话调用方可以稍后执行 `resume`，独立认证命令可以直接重试。
+- `browser_channel_failed` 和 `browser_channel_exhausted` 属于退出码 `30`；错误尝试只含
+  通道、`unavailable|launch|navigation|desktop|window_verification` 阶段、规范化原因和
+  所需动作，不输出浏览器路径或启动命令。
 - 具体业务状态和错误细节始终以最终 JSON 的 `status`、`action_required` 和结构化 `error` 为准。
 - 新增退出码不得改变已冻结数字的含义。

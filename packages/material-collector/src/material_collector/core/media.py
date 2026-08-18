@@ -6,7 +6,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class _Record(BaseModel):
@@ -17,6 +17,12 @@ class Platform(StrEnum):
     BILIBILI = "bilibili"
     DOUYIN = "douyin"
     XIAOHONGSHU = "xiaohongshu"
+
+
+class BrowserChannel(StrEnum):
+    AUTO = "auto"
+    EDGE = "edge"
+    CHROME = "chrome"
 
 
 PLATFORM_ORDER: tuple[Platform, ...] = (
@@ -37,6 +43,7 @@ class AuthProbe(_Record):
     schema_version: Literal["1.0"] = "1.0"
     platform: Platform
     auth_profile: str
+    browser_channel: BrowserChannel = BrowserChannel.CHROME
     status: AuthStatus
     checked_at: str
     reason_code: str | None = None
@@ -44,7 +51,20 @@ class AuthProbe(_Record):
 
 class PlatformContext(_Record):
     auth_profile: str
+    browser_channel: BrowserChannel = BrowserChannel.CHROME
     request_timeout_seconds: int = Field(default=30, ge=1)
+
+    @field_validator("browser_channel")
+    @classmethod
+    def require_frozen_channel(cls, value: BrowserChannel) -> BrowserChannel:
+        if value is BrowserChannel.AUTO:
+            raise ValueError("PlatformContext requires a frozen browser channel.")
+        return value
+
+
+class AuthenticationSelection(_Record):
+    browser_channel: BrowserChannel
+    probes: tuple[AuthProbe, ...]
 
 
 class SearchRequest(_Record):

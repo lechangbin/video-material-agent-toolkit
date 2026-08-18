@@ -22,7 +22,13 @@ from material_collector.application.workflow import (
     WorkflowResult,
     WorkflowSegmentSummary,
 )
-from material_collector.core.media import Platform
+from material_collector.core.media import (
+    AuthenticationSelection,
+    AuthProbe,
+    AuthStatus,
+    BrowserChannel,
+    Platform,
+)
 from material_collector.infrastructure.session_runtime_store import SqliteSessionRuntime
 from material_collector.infrastructure.session_store import SqliteSessionStore
 
@@ -95,6 +101,7 @@ def test_long_running_commands_expose_progress_format_options() -> None:
 
     assert run_help.exit_code == 0
     assert "--progress-format" in run_help.stdout
+    assert "--browser-channel" in run_help.stdout
     assert resume_help.exit_code == 0
     assert "--progress-format" in resume_help.stdout
 
@@ -456,6 +463,11 @@ def test_run_status_and_sessions_list_share_the_application_module(
 
         async def run(self, workspace: Path, session_id: str) -> WorkflowResult:
             self._progress.report("search_started", {"segment_id": "seg_001"})
+            SessionApplication(store=SqliteSessionStore()).freeze_browser_channel(
+                workspace,
+                session_id,
+                BrowserChannel.EDGE,
+            )
             result_path = (
                 workspace
                 / ".material-collector"
@@ -506,6 +518,8 @@ def test_run_status_and_sessions_list_share_the_application_module(
             "4",
             "--request-timeout-seconds",
             "45",
+            "--browser-channel",
+            "edge",
         ],
     )
 
@@ -545,6 +559,8 @@ def test_run_status_and_sessions_list_share_the_application_module(
     assert status_payload["session_id"] == session_id
     assert status_payload["constraints"]["max_rounds"] == 4
     assert status_payload["constraints"]["request_timeout_seconds"] == 45
+    assert status_payload["constraints"]["browser_channel"] == "edge"
+    assert status_payload["selected_browser_channel"] == "edge"
 
     list_result = runner.invoke(
         app,
@@ -553,6 +569,57 @@ def test_run_status_and_sessions_list_share_the_application_module(
     assert list_result.exit_code == 0
     list_payload = parse_single_json_line(list_result.stdout)
     assert [item["session_id"] for item in list_payload["sessions"]] == [session_id]
+
+
+def test_auth_login_reports_the_selected_native_browser_channel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requested: list[BrowserChannel] = []
+
+    class FakeAuthentication:
+        async def ensure_authenticated(
+            self,
+            platforms: tuple[Platform, ...],
+            auth_profile: str,
+            wait_seconds: int,
+            *,
+            browser_channel: BrowserChannel,
+            progress: Any | None = None,
+        ) -> AuthenticationSelection:
+            del wait_seconds, progress
+            requested.append(browser_channel)
+            return AuthenticationSelection(
+                browser_channel=BrowserChannel.EDGE,
+                probes=(
+                    AuthProbe(
+                        platform=platforms[0],
+                        auth_profile=auth_profile,
+                        browser_channel=BrowserChannel.EDGE,
+                        status=AuthStatus.VALID,
+                        checked_at="2026-08-18T00:00:00Z",
+                    ),
+                ),
+            )
+
+    monkeypatch.setattr(cli_module, "_authentication", FakeAuthentication)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "auth",
+            "login",
+            "--platform",
+            "bilibili",
+            "--browser-channel",
+            "auto",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    payload = parse_single_json_line(result.stdout)
+    assert requested == [BrowserChannel.AUTO]
+    assert payload["browser_channel"] == "edge"
+    assert payload["platforms"][0]["browser_channel"] == "edge"
 
 
 def test_cancel_and_status_report_pending_execution_lease(

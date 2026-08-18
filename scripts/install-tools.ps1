@@ -5,7 +5,10 @@ param(
 
     [switch]$InstallFfmpeg,
 
-    [string]$PythonExecutable
+    [string]$PythonExecutable,
+
+    [ValidateSet('auto', 'edge', 'chrome')]
+    [string]$BrowserChannel = 'auto'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -24,6 +27,48 @@ if ($collectorWheels.Count -ne 1 -or $semvideoWheels.Count -ne 1) {
 
 $collectorWheel = $collectorWheels[0]
 $semvideoWheel = $semvideoWheels[0]
+
+function Test-BrowserChannel {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('edge', 'chrome')]
+        [string]$Channel
+    )
+
+    $relativePath = if ($Channel -eq 'edge') {
+        'Microsoft\Edge\Application\msedge.exe'
+    } else {
+        'Google\Chrome\Application\chrome.exe'
+    }
+    $roots = @(
+        [Environment]::GetFolderPath('ProgramFiles'),
+        [Environment]::GetFolderPath('ProgramFilesX86'),
+        [Environment]::GetFolderPath('LocalApplicationData')
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+    foreach ($root in $roots) {
+        if (Test-Path -LiteralPath (Join-Path $root $relativePath) -PathType Leaf) {
+            return $true
+        }
+    }
+    return $false
+}
+
+$resolvedBrowserChannel = $null
+if ($BrowserChannel -eq 'auto') {
+    foreach ($candidate in @('edge', 'chrome')) {
+        if (Test-BrowserChannel -Channel $candidate) {
+            $resolvedBrowserChannel = $candidate
+            break
+        }
+    }
+} elseif (Test-BrowserChannel -Channel $BrowserChannel) {
+    $resolvedBrowserChannel = $BrowserChannel
+}
+
+if ($null -eq $resolvedBrowserChannel) {
+    throw "Browser channel '$BrowserChannel' is unavailable. Install or repair Microsoft Edge or Google Chrome."
+}
 
 $checksumPath = Join-Path $releasePath 'SHA256SUMS.txt'
 if (-not (Test-Path -LiteralPath $checksumPath)) {
@@ -125,6 +170,8 @@ $semvideoCommand = Get-Command semvideo -ErrorAction SilentlyContinue
         'installed in the Python user Scripts directory; the Skill can resolve it directly'
     }
     ffmpeg_requested = [bool]$InstallFfmpeg
+    browser_channel_requested = $BrowserChannel
+    browser_channel_resolved = $resolvedBrowserChannel
     checksums_verified = $true
     python = $PythonExecutable
 } | ConvertTo-Json -Depth 3

@@ -8,7 +8,9 @@ from typing import Protocol
 from material_collector.core.fingerprints import FingerprintMatch
 from material_collector.core.media import (
     AssetRecord,
+    AuthenticationSelection,
     AuthProbe,
+    BrowserChannel,
     FetchRequest,
     FetchResult,
     MediaUnit,
@@ -23,7 +25,12 @@ from material_collector.core.media import (
 class AuthenticationGateway(Protocol):
     """Own persistent browser authentication without exposing credentials."""
 
-    async def probe(self, platform: Platform, auth_profile: str) -> AuthProbe: ...
+    async def probe(
+        self,
+        platform: Platform,
+        auth_profile: str,
+        browser_channel: BrowserChannel = BrowserChannel.CHROME,
+    ) -> AuthProbe: ...
 
     async def ensure_authenticated(
         self,
@@ -31,14 +38,16 @@ class AuthenticationGateway(Protocol):
         auth_profile: str,
         wait_seconds: int,
         *,
+        browser_channel: BrowserChannel = BrowserChannel.CHROME,
         progress: ProgressReporter | None = None,
-    ) -> tuple[AuthProbe, ...]: ...
+    ) -> AuthenticationSelection: ...
 
     async def logout(
         self,
         platform: Platform,
         auth_profile: str,
         confirmation: str,
+        browser_channel: BrowserChannel = BrowserChannel.CHROME,
     ) -> None: ...
 
 

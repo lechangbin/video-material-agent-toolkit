@@ -37,8 +37,10 @@ from material_collector.application.ports import ProgressReporter
 from material_collector.core.errors import CollectorError
 from material_collector.core.media import (
     PLATFORM_ORDER,
+    AuthenticationSelection,
     AuthProbe,
     AuthStatus,
+    BrowserChannel,
     Platform,
 )
 from material_collector.infrastructure.platforms.rendered_access import (
@@ -57,6 +59,10 @@ _REASON_CODE = re.compile(r"^[a-z][a-z0-9_]{0,79}$")
 _LOCK_WAIT_SECONDS = 60.0
 _LOCK_POLL_SECONDS = 0.05
 _LOGIN_PROGRESS_INTERVAL_SECONDS = 10.0
+_PLAYWRIGHT_CHANNEL = {
+    BrowserChannel.EDGE: "msedge",
+    BrowserChannel.CHROME: "chrome",
+}
 
 
 class AuthenticationError(CollectorError):
@@ -120,8 +126,69 @@ class AuthenticationContractError(AuthenticationError):
         super().__init__("contract_invalid", message, details=details)
 
 
-class BrowserDesktopUnavailableError(RuntimeError):
-    """A driver could not start a headed browser."""
+class BrowserChannelSelectionError(AuthenticationError):
+    def __init__(self, attempts: list[dict[str, str]], *, automatic: bool) -> None:
+        super().__init__(
+            "browser_channel_exhausted" if automatic else "browser_channel_failed",
+            "No requested native browser channel could complete authentication.",
+            details={
+                "attempts": attempts,
+                "required_action": "install_or_repair_a_supported_browser",
+            },
+        )
+
+
+class BrowserLifecycleError(RuntimeError):
+    """A credential-free browser failure that may permit channel fallback."""
+
+    def __init__(self, stage: str, reason: str, required_action: str) -> None:
+        super().__init__(reason)
+        self.stage = stage
+        self.reason = _safe_reason_code(reason)
+        self.required_action = _safe_reason_code(required_action)
+
+
+class BrowserChannelUnavailableError(BrowserLifecycleError):
+    def __init__(self) -> None:
+        super().__init__(
+            "unavailable",
+            "browser_channel_unavailable",
+            "install_selected_browser",
+        )
+
+
+class BrowserLaunchError(BrowserLifecycleError):
+    def __init__(self) -> None:
+        super().__init__("launch", "browser_launch_failed", "repair_selected_browser")
+
+
+class BrowserNavigationError(BrowserLifecycleError):
+    def __init__(self) -> None:
+        super().__init__(
+            "navigation",
+            "browser_navigation_failed",
+            "check_network_and_retry",
+        )
+
+
+class BrowserDesktopUnavailableError(BrowserLifecycleError):
+    """A headed browser cannot be attached to the interactive desktop."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "desktop",
+            "interactive_desktop_unavailable",
+            "run_from_an_interactive_desktop",
+        )
+
+
+class BrowserWindowVerificationError(BrowserLifecycleError):
+    def __init__(self) -> None:
+        super().__init__(
+            "window_verification",
+            "browser_window_not_verified",
+            "keep_the_login_window_visible",
+        )
 
 
 class BrowserLoginTimeoutError(RuntimeError):
@@ -236,21 +303,39 @@ class PlaywrightAuthenticationGateway:
         *,
         root_dir: Path | None = None,
         driver: BrowserAuthenticationDriver | None = None,
+        driver_factory: Callable[[BrowserChannel], BrowserAuthenticationDriver] | None = None,
         now: Callable[[], datetime] | None = None,
         lock_wait_seconds: float = _LOCK_WAIT_SECONDS,
+        native_windows: bool | None = None,
     ) -> None:
         self._root_dir = _resolve_auth_root(root_dir)
-        self._driver = driver or PlaywrightBrowserAuthenticationDriver()
+        if driver is not None and driver_factory is not None:
+            raise ValueError("driver and driver_factory are mutually exclusive")
+        if driver_factory is not None:
+            self._driver_factory = driver_factory
+        elif driver is not None:
+            self._driver_factory = lambda _channel: driver
+        else:
+            self._driver_factory = lambda channel: PlaywrightBrowserAuthenticationDriver(
+                channel=channel
+            )
         self._now = now or (lambda: datetime.now(UTC))
         self._lock_wait_seconds = lock_wait_seconds
+        self._native_windows = os.name == "nt" if native_windows is None else native_windows
 
-    async def probe(self, platform: Platform, auth_profile: str) -> AuthProbe:
+    async def probe(
+        self,
+        platform: Platform,
+        auth_profile: str,
+        browser_channel: BrowserChannel = BrowserChannel.CHROME,
+    ) -> AuthProbe:
         """Run one conservative, read-only probe under the profile lock."""
 
         profile = _validate_profile_id(auth_profile)
-        lock = await self._acquire(platform, profile)
+        channel = _explicit_channel(browser_channel)
+        lock = await self._acquire(platform, profile, channel)
         try:
-            return await self._probe_locked(platform, profile)
+            return await self._probe_locked(platform, profile, channel)
         finally:
             await asyncio.to_thread(lock.release)
 
@@ -260,6 +345,43 @@ class PlaywrightAuthenticationGateway:
         auth_profile: str,
         wait_seconds: int,
         *,
+        browser_channel: BrowserChannel = BrowserChannel.CHROME,
+        progress: ProgressReporter | None = None,
+    ) -> AuthenticationSelection:
+        """Select one browser channel and authenticate every requested platform."""
+
+        candidates = _browser_candidates(browser_channel, native_windows=self._native_windows)
+        attempts: list[dict[str, str]] = []
+        for channel in candidates:
+            try:
+                probes = await self._ensure_authenticated_on_channel(
+                    platforms,
+                    auth_profile,
+                    wait_seconds,
+                    browser_channel=channel,
+                    progress=progress,
+                )
+                return AuthenticationSelection(browser_channel=channel, probes=probes)
+            except BrowserLifecycleError as error:
+                attempts.append(
+                    {
+                        "browser_channel": channel.value,
+                        "stage": error.stage,
+                        "reason": error.reason,
+                        "required_action": error.required_action,
+                    }
+                )
+                if browser_channel is not BrowserChannel.AUTO:
+                    raise BrowserChannelSelectionError(attempts, automatic=False) from error
+        raise BrowserChannelSelectionError(attempts, automatic=True)
+
+    async def _ensure_authenticated_on_channel(
+        self,
+        platforms: tuple[Platform, ...],
+        auth_profile: str,
+        wait_seconds: int,
+        *,
+        browser_channel: BrowserChannel,
         progress: ProgressReporter | None = None,
     ) -> tuple[AuthProbe, ...]:
         """Verify/login requested platforms serially in the frozen platform order."""
@@ -284,11 +406,12 @@ class PlaywrightAuthenticationGateway:
             common: dict[str, object] = {
                 "platform": platform.value,
                 "auth_profile": profile,
+                "browser_channel": browser_channel.value,
             }
-            lock = await self._acquire(platform, profile)
+            lock = await self._acquire(platform, profile, browser_channel)
             try:
                 _report(progress, "authentication_probe_started", common)
-                current = await self._probe_locked(platform, profile)
+                current = await self._probe_locked(platform, profile, browser_channel)
                 _report(
                     progress,
                     "authentication_probe_completed",
@@ -306,13 +429,14 @@ class PlaywrightAuthenticationGateway:
                         "actor": "human",
                         "wait_seconds": wait_seconds,
                         "hint": (
-                            "Check Chrome in the taskbar and do not close "
+                            f"Check {browser_channel.value} in the taskbar and do not close "
                             "the login window."
                         ),
                     }
                     current = await self._login_locked(
                         platform,
                         profile,
+                        browser_channel,
                         wait_seconds,
                         progress=_LoginProgressBridge(
                             progress=progress,
@@ -340,6 +464,7 @@ class PlaywrightAuthenticationGateway:
         platform: Platform,
         auth_profile: str,
         confirmation: str,
+        browser_channel: BrowserChannel = BrowserChannel.CHROME,
     ) -> None:
         """Remove exactly one platform profile after explicit confirmation."""
 
@@ -350,9 +475,10 @@ class PlaywrightAuthenticationGateway:
                 details={"platform": platform.value},
             )
 
-        lock = await self._acquire(platform, profile)
+        channel = _explicit_channel(browser_channel)
+        lock = await self._acquire(platform, profile, channel)
         try:
-            profile_dir = self._profile_dir(profile, platform)
+            profile_dir = self._profile_dir(profile, channel, platform)
             await asyncio.to_thread(_remove_profile_directory, profile_dir)
         finally:
             await asyncio.to_thread(lock.release)
@@ -361,8 +487,13 @@ class PlaywrightAuthenticationGateway:
         self,
         platform: Platform,
         auth_profile: str,
+        browser_channel: BrowserChannel,
     ) -> _ProcessFileLock:
-        lock_path = self._root_dir / ".locks" / f"{auth_profile}.{platform.value}.lock"
+        lock_path = (
+            self._root_dir
+            / ".locks"
+            / f"{auth_profile}.{browser_channel.value}.{platform.value}.lock"
+        )
         lock = _ProcessFileLock(lock_path)
         deadline = time.monotonic() + self._lock_wait_seconds
         while True:
@@ -377,36 +508,40 @@ class PlaywrightAuthenticationGateway:
         self,
         platform: Platform,
         auth_profile: str,
+        browser_channel: BrowserChannel,
     ) -> AuthProbe:
-        profile_dir = self._profile_dir(auth_profile, platform)
+        profile_dir = self._profile_dir(auth_profile, browser_channel, platform)
         if not profile_dir.is_dir():
             result = DriverProbe(AuthStatus.INVALID, "profile_missing")
         else:
             try:
-                result = await self._driver.probe(platform, profile_dir)
-            except OSError, RuntimeError, ValueError:
-                result = DriverProbe(AuthStatus.PROBE_FAILED, "probe_driver_error")
-        return self._public_probe(platform, auth_profile, result)
+                result = await self._driver_factory(browser_channel).probe(platform, profile_dir)
+            except BrowserLifecycleError:
+                raise
+            except (OSError, RuntimeError, ValueError) as error:
+                raise BrowserLaunchError from error
+        return self._public_probe(platform, auth_profile, browser_channel, result)
 
     async def _login_locked(
         self,
         platform: Platform,
         auth_profile: str,
+        browser_channel: BrowserChannel,
         wait_seconds: int,
         *,
         progress: Callable[[str, dict[str, object]], None],
     ) -> AuthProbe:
-        profile_dir = self._profile_dir(auth_profile, platform)
+        profile_dir = self._profile_dir(auth_profile, browser_channel, platform)
         profile_dir.mkdir(parents=True, exist_ok=True)
         try:
-            result = await self._driver.login(
+            result = await self._driver_factory(browser_channel).login(
                 platform,
                 profile_dir,
                 wait_seconds,
                 progress,
             )
-        except BrowserDesktopUnavailableError as error:
-            raise AuthenticationDesktopUnavailableError(platform, auth_profile) from error
+        except BrowserLifecycleError:
+            raise
         except BrowserLoginTimeoutError as error:
             raise AuthenticationLoginTimeoutError(
                 platform,
@@ -415,9 +550,9 @@ class PlaywrightAuthenticationGateway:
                 reason_code=error.reason_code,
             ) from error
         except (OSError, RuntimeError, ValueError) as error:
-            raise AuthenticationDesktopUnavailableError(platform, auth_profile) from error
+            raise BrowserLaunchError from error
 
-        probe = self._public_probe(platform, auth_profile, result)
+        probe = self._public_probe(platform, auth_profile, browser_channel, result)
         if probe.status is AuthStatus.PROBE_FAILED:
             raise AuthenticationProbeFailedError(probe)
         if probe.status is not AuthStatus.VALID:
@@ -429,18 +564,25 @@ class PlaywrightAuthenticationGateway:
             )
         return probe
 
-    def _profile_dir(self, auth_profile: str, platform: Platform) -> Path:
-        return self._root_dir / auth_profile / platform.value
+    def _profile_dir(
+        self,
+        auth_profile: str,
+        browser_channel: BrowserChannel,
+        platform: Platform,
+    ) -> Path:
+        return self._root_dir / auth_profile / browser_channel.value / platform.value
 
     def _public_probe(
         self,
         platform: Platform,
         auth_profile: str,
+        browser_channel: BrowserChannel,
         result: DriverProbe,
     ) -> AuthProbe:
         return AuthProbe(
             platform=platform,
             auth_profile=auth_profile,
+            browser_channel=browser_channel,
             status=result.status,
             checked_at=_iso_utc(self._now()),
             reason_code=(
@@ -461,36 +603,52 @@ class PlaywrightBrowserAuthenticationDriver:
     def __init__(
         self,
         *,
+        channel: BrowserChannel = BrowserChannel.CHROME,
         desktop_verifier: Callable[[Path, datetime], bool] | None = None,
+        desktop_available: Callable[[], bool] | None = None,
     ) -> None:
+        self._channel = _explicit_channel(channel)
         self._desktop_verifier = (
             desktop_verifier or _headed_chrome_visible_on_active_desktop
+        )
+        self._desktop_available = desktop_available or (
+            _interactive_desktop_available
+            if desktop_verifier is None
+            else lambda: True
         )
 
     async def probe(self, platform: Platform, user_data_dir: Path) -> DriverProbe:
         try:
             async with async_playwright() as playwright:
-                context = await playwright.chromium.launch_persistent_context(
-                    str(user_data_dir),
-                    channel="chrome",
-                    headless=True,
-                    chromium_sandbox=True,
-                    service_workers="block",
-                    args=["--no-proxy-server"],
-                )
+                try:
+                    context = await playwright.chromium.launch_persistent_context(
+                        str(user_data_dir),
+                        channel=_PLAYWRIGHT_CHANNEL[self._channel],
+                        headless=True,
+                        chromium_sandbox=True,
+                        service_workers="block",
+                        args=["--no-proxy-server"],
+                    )
+                except PlaywrightError as error:
+                    raise _playwright_launch_error(error) from error
                 try:
                     if platform in {Platform.DOUYIN, Platform.XIAOHONGSHU}:
                         page = await _fresh_context_page(context)
-                        await page.goto(
-                            self._HOME_URLS[platform],
-                            wait_until="domcontentloaded",
-                            timeout=15_000,
-                        )
+                        try:
+                            await page.goto(
+                                self._HOME_URLS[platform],
+                                wait_until="domcontentloaded",
+                                timeout=15_000,
+                            )
+                        except PlaywrightError as error:
+                            raise BrowserNavigationError from error
                     return await self._probe_context(platform, context)
                 finally:
                     await context.close()
-        except PlaywrightError:
-            return DriverProbe(AuthStatus.PROBE_FAILED, "browser_or_network_error")
+        except BrowserLifecycleError:
+            raise
+        except PlaywrightError as error:
+            raise BrowserLaunchError from error
 
     async def login(
         self,
@@ -499,17 +657,22 @@ class PlaywrightBrowserAuthenticationDriver:
         wait_seconds: int,
         progress: Callable[[str, dict[str, object]], None] | None = None,
     ) -> DriverProbe:
+        if not await asyncio.to_thread(self._desktop_available):
+            raise BrowserDesktopUnavailableError
         try:
             async with async_playwright() as playwright:
                 launch_started_at = datetime.now(UTC)
-                context = await playwright.chromium.launch_persistent_context(
-                    str(user_data_dir),
-                    channel="chrome",
-                    headless=False,
-                    chromium_sandbox=True,
-                    service_workers="block",
-                    args=["--no-proxy-server"],
-                )
+                try:
+                    context = await playwright.chromium.launch_persistent_context(
+                        str(user_data_dir),
+                        channel=_PLAYWRIGHT_CHANNEL[self._channel],
+                        headless=False,
+                        chromium_sandbox=True,
+                        service_workers="block",
+                        args=["--no-proxy-server"],
+                    )
+                except PlaywrightError as error:
+                    raise _playwright_launch_error(error) from error
                 try:
                     page = context.pages[0] if context.pages else await context.new_page()
                     if progress is not None:
@@ -535,7 +698,10 @@ class PlaywrightBrowserAuthenticationDriver:
                                     "authentication_login_window_opening",
                                     {"phase": "navigation"},
                                 )
-                        await navigation
+                        try:
+                            await navigation
+                        except PlaywrightError as error:
+                            raise BrowserNavigationError from error
                     except BaseException:
                         if not navigation.done():
                             navigation.cancel()
@@ -549,7 +715,7 @@ class PlaywrightBrowserAuthenticationDriver:
                         launch_started_at,
                     )
                     if not desktop_available:
-                        raise BrowserDesktopUnavailableError
+                        raise BrowserWindowVerificationError
                     if progress is not None:
                         progress("authentication_login_window_opened", {})
                         progress("authentication_login_waiting", {})
@@ -576,10 +742,10 @@ class PlaywrightBrowserAuthenticationDriver:
                     await context.close()
         except BrowserLoginTimeoutError:
             raise
-        except BrowserDesktopUnavailableError:
+        except BrowserLifecycleError:
             raise
         except PlaywrightError as error:
-            raise BrowserDesktopUnavailableError from error
+            raise BrowserLaunchError from error
 
     async def _probe_context(
         self,
@@ -784,6 +950,41 @@ def _validate_profile_id(value: str) -> str:
     return value
 
 
+def _explicit_channel(value: BrowserChannel) -> BrowserChannel:
+    if value is BrowserChannel.AUTO:
+        raise AuthenticationContractError(
+            "This operation requires an explicit browser channel.",
+            details={"browser_channel": value.value},
+        )
+    return value
+
+
+def _browser_candidates(
+    value: BrowserChannel,
+    *,
+    native_windows: bool,
+) -> tuple[BrowserChannel, ...]:
+    if value is not BrowserChannel.AUTO:
+        return (_explicit_channel(value),)
+    if native_windows:
+        return (BrowserChannel.EDGE, BrowserChannel.CHROME)
+    return (BrowserChannel.CHROME,)
+
+
+def _playwright_launch_error(error: PlaywrightError) -> BrowserLifecycleError:
+    message = str(error).lower()
+    unavailable_markers = (
+        "executable doesn't exist",
+        "executable does not exist",
+        "distribution 'chrome' is not found",
+        "distribution 'msedge' is not found",
+        "browser was not found",
+    )
+    if any(marker in message for marker in unavailable_markers):
+        return BrowserChannelUnavailableError()
+    return BrowserLaunchError()
+
+
 def _safe_reason_code(value: str) -> str:
     return value if _REASON_CODE.fullmatch(value) else "unspecified_auth_result"
 
@@ -836,6 +1037,13 @@ def _headed_chrome_visible_on_active_desktop(
     if os.name != "nt":
         return True
     return WindowsChromeDesktopVerifier()(user_data_dir, launch_started_at)
+
+
+def _interactive_desktop_available() -> bool:
+    if os.name != "nt":
+        return True
+    active_session_id = _windows_active_session_id()
+    return active_session_id is not None and _windows_current_session_id() == active_session_id
 
 
 def _windows_active_session_id() -> int | None:
@@ -894,7 +1102,8 @@ def _visible_chrome_window_process_ids(active_session_id: int) -> set[int]:
 
 def _read_chrome_processes() -> tuple[ChromeProcessSnapshot, ...]:
     command = (
-        "$items = @(Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | "
+        "$items = @(Get-CimInstance Win32_Process "
+        "-Filter \"Name='chrome.exe' OR Name='msedge.exe'\" | "
         "ForEach-Object { "
         "$started = $null; "
         "try { $started = (Get-Process -Id $_.ProcessId -ErrorAction Stop)."

@@ -19,6 +19,7 @@ from material_collector.core.errors import ContractError, SessionStateError
 from material_collector.core.manifest import WorkGroupMember, WorkGroupRecord
 from material_collector.core.media import (
     AssetRecord,
+    BrowserChannel,
     CandidateSource,
     FetchRequest,
     FetchResult,
@@ -351,6 +352,7 @@ async def test_fetch_hq_receives_persisted_media_identity_metadata(
             context: PlatformContext,
         ) -> FetchResult:
             assert context.request_timeout_seconds == 77
+            assert context.browser_channel is BrowserChannel.EDGE
             assert request.media_unit.metadata == {
                 "bvid": "BV1TEST",
                 "cid": "cid1",
@@ -376,6 +378,7 @@ async def test_fetch_hq_receives_persisted_media_identity_metadata(
         session_id,
         "bilibili:BV1TEST:cid1",
         auth_profile="default",
+        browser_channel=BrowserChannel.EDGE,
         request_timeout_seconds=77,
     )
 

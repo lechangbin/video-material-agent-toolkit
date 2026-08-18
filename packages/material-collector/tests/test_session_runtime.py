@@ -533,6 +533,8 @@ def test_v1_base_session_is_rejected_before_runtime_execution(tmp_path: Path) ->
     workspace, session_id = _create_session(tmp_path)
     database = workspace / ".material-collector" / "sessions" / session_id / "session.sqlite3"
     with sqlite3.connect(database) as connection:
+        connection.execute("ALTER TABLE session_state DROP COLUMN selected_browser_channel")
+        connection.execute("ALTER TABLE session_state DROP COLUMN browser_channel")
         connection.execute("ALTER TABLE session_state DROP COLUMN request_timeout_seconds")
         connection.execute("UPDATE schema_info SET schema_version = 1 WHERE singleton = 1")
         connection.execute("PRAGMA user_version = 1")

@@ -18,7 +18,7 @@ import httpx
 from playwright.async_api import BrowserContext, async_playwright
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
-from material_collector.core.media import Platform, PlatformContext
+from material_collector.core.media import BrowserChannel, Platform, PlatformContext
 from material_collector.infrastructure.platforms._shared import (
     validate_temporary_media_url,
 )
@@ -30,6 +30,10 @@ from material_collector.infrastructure.platforms.rendered_access import (
 
 _PROFILE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
 _DIRECT_CHROMIUM_ARGS = ("--no-proxy-server",)
+_PLAYWRIGHT_CHANNEL = {
+    BrowserChannel.EDGE: "msedge",
+    BrowserChannel.CHROME: "chrome",
+}
 _CAPTURE_WARMUP_URLS: Mapping[Platform, str] = {
     Platform.XIAOHONGSHU: "https://www.xiaohongshu.com/explore",
 }
@@ -179,7 +183,12 @@ class PlaywrightPlatformTransport:
         backend = _PinnedNetworkBackend(self._network_backend)
         return _PinnedAsyncHTTPTransport(backend), backend
 
-    def _profile_path(self, auth_profile: str, platform: Platform) -> Path:
+    def _profile_path(
+        self,
+        auth_profile: str,
+        browser_channel: BrowserChannel,
+        platform: Platform,
+    ) -> Path:
         if _PROFILE_ID.fullmatch(auth_profile) is None:
             raise PlatformAdapterError(
                 "auth_profile_invalid",
@@ -200,7 +209,7 @@ class PlaywrightPlatformTransport:
                     retryable=False,
                 )
             auth_root = Path(local_app_data) / "material-collector" / "auth"
-        return auth_root / auth_profile / platform.value
+        return auth_root / auth_profile / browser_channel.value / platform.value
 
     @asynccontextmanager
     async def _open_context(
@@ -208,12 +217,16 @@ class PlaywrightPlatformTransport:
         platform: Platform,
         context: PlatformContext,
     ) -> AsyncIterator[BrowserContext]:
-        profile_path = self._profile_path(context.auth_profile, platform)
+        profile_path = self._profile_path(
+            context.auth_profile,
+            context.browser_channel,
+            platform,
+        )
         profile_path.mkdir(parents=True, exist_ok=True)
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch_persistent_context(
                 user_data_dir=profile_path,
-                channel="chrome",
+                channel=_PLAYWRIGHT_CHANNEL[context.browser_channel],
                 headless=self._headless,
                 chromium_sandbox=True,
                 args=list(_DIRECT_CHROMIUM_ARGS),

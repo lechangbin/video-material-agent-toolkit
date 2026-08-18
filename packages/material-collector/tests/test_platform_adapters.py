@@ -19,6 +19,7 @@ from material_collector.application.ports import (
     SourceResolver,
 )
 from material_collector.core.media import (
+    BrowserChannel,
     FetchRequest,
     MediaQuality,
     Platform,
@@ -949,7 +950,7 @@ async def test_platform_browser_explicitly_bypasses_system_proxy(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    launches: list[dict[str, object]] = []
+    launches: list[tuple[Path, dict[str, object]]] = []
 
     class FakeContext(_FakeBrowser):
         async def close(self) -> None:
@@ -961,8 +962,7 @@ async def test_platform_browser_explicitly_bypasses_system_proxy(
             user_data_dir: Path,
             **kwargs: object,
         ) -> FakeContext:
-            del user_data_dir
-            launches.append(kwargs)
+            launches.append((user_data_dir, kwargs))
             return FakeContext()
 
     class FakePlaywrightManager:
@@ -978,12 +978,19 @@ async def test_platform_browser_explicitly_bypasses_system_proxy(
     )
     transport = PlaywrightPlatformTransport(auth_root=tmp_path)
 
-    async with transport._open_context(Platform.BILIBILI, CONTEXT):
+    context = PlatformContext(
+        auth_profile="editing",
+        browser_channel=BrowserChannel.EDGE,
+    )
+    async with transport._open_context(Platform.BILIBILI, context):
         pass
 
-    assert launches[0]["args"] == ["--no-proxy-server"]
-    assert launches[0]["headless"] is True
-    assert launches[0]["chromium_sandbox"] is True
+    profile_path, launch = launches[0]
+    assert profile_path == tmp_path / "editing" / "edge" / "bilibili"
+    assert launch["channel"] == "msedge"
+    assert launch["args"] == ["--no-proxy-server"]
+    assert launch["headless"] is True
+    assert launch["chromium_sandbox"] is True
 
 
 @pytest.mark.asyncio

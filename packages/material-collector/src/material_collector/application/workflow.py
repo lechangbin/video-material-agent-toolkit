@@ -177,10 +177,6 @@ class CollectionWorkflow:
             stages=WORKFLOW_STAGES,
         )
         issues: list[WorkflowIssue] = []
-        context = PlatformContext(
-            auth_profile=session.constraints.auth_profile,
-            request_timeout_seconds=session.constraints.request_timeout_seconds,
-        )
         reauthenticated: set[Platform] = set()
         segment_ids = tuple(plan.segment_id for plan in query_plans.plans)
         lease_released = False
@@ -190,6 +186,16 @@ class CollectionWorkflow:
                 lease,
                 session.constraints.auth_wait_seconds,
                 query_plans.platform_scope,
+            )
+            session = self._sessions.get_session(normalized_workspace, session_id)
+            if session.selected_browser_channel is None:
+                raise SessionStateError(
+                    "Authentication completed without freezing a browser channel."
+                )
+            context = PlatformContext(
+                auth_profile=session.constraints.auth_profile,
+                browser_channel=session.selected_browser_channel,
+                request_timeout_seconds=session.constraints.request_timeout_seconds,
             )
             lease, search_issues = await self._run_search(
                 lease,
@@ -318,17 +324,24 @@ class CollectionWorkflow:
         )
         try:
             self._report("authentication_started", {"session_id": lease.session_id})
-            lease, probes = await self._await_with_lease_maintenance(
+            session = self._sessions.get_session(lease.workspace, lease.session_id)
+            requested_channel = (
+                session.selected_browser_channel or session.constraints.browser_channel
+            )
+            lease, selection = await self._await_with_lease_maintenance(
                 lease,
                 self._authentication.ensure_authenticated(
                     platform_scope,
-                    self._sessions.get_session(
-                        lease.workspace,
-                        lease.session_id,
-                    ).constraints.auth_profile,
+                    session.constraints.auth_profile,
                     wait_seconds,
+                    browser_channel=requested_channel,
                     progress=self._progress,
                 ),
+            )
+            self._sessions.freeze_browser_channel(
+                lease.workspace,
+                lease.session_id,
+                selection.browser_channel,
             )
             next_stage = self._runtime.complete_stage(
                 lease,
@@ -336,8 +349,9 @@ class CollectionWorkflow:
                 result={
                     "platforms": [
                         {"platform": probe.platform.value, "status": probe.status.value}
-                        for probe in probes
-                    ]
+                        for probe in selection.probes
+                    ],
+                    "browser_channel": selection.browser_channel.value,
                 },
             )
             return _lease_with_next(lease, next_stage)
@@ -455,6 +469,7 @@ class CollectionWorkflow:
                             (platform,),
                             context.auth_profile,
                             wait_seconds,
+                            browser_channel=context.browser_channel,
                             progress=self._progress,
                         ),
                     )
@@ -652,6 +667,7 @@ class CollectionWorkflow:
                         (platform,),
                         context.auth_profile,
                         wait_seconds,
+                        browser_channel=context.browser_channel,
                         progress=self._progress,
                     ),
                 )
@@ -1251,6 +1267,7 @@ class CollectionWorkflow:
                     (platform,),
                     context.auth_profile,
                     wait_seconds,
+                    browser_channel=context.browser_channel,
                     progress=self._progress,
                 ),
             )

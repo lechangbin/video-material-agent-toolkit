@@ -19,8 +19,10 @@ from material_collector.core.errors import CollectorError
 from material_collector.core.fingerprints import FingerprintMatch
 from material_collector.core.media import (
     PLATFORM_ORDER,
+    AuthenticationSelection,
     AuthProbe,
     AuthStatus,
+    BrowserChannel,
     CandidateSource,
     FetchRequest,
     FetchResult,
@@ -53,6 +55,7 @@ def _create_session(
     platform_scope: tuple[Platform, ...] = PLATFORM_ORDER,
     add_second_query: bool = False,
     request_timeout_seconds: int = 30,
+    browser_channel: BrowserChannel = BrowserChannel.AUTO,
 ) -> tuple[Path, str]:
     input_path = tmp_path / "input.json"
     plans_path = tmp_path / "plans.json"
@@ -120,6 +123,7 @@ def _create_session(
                 max_videos=max_videos,
                 auth_wait_seconds=30,
                 request_timeout_seconds=request_timeout_seconds,
+                browser_channel=browser_channel,
             ),
         )
     )
@@ -127,13 +131,24 @@ def _create_session(
 
 
 class _Authentication:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        selected_channel: BrowserChannel = BrowserChannel.EDGE,
+    ) -> None:
         self.ensure_calls: list[tuple[Platform, ...]] = []
+        self.requested_channels: list[BrowserChannel] = []
+        self.selected_channel = selected_channel
 
-    async def probe(self, platform: Platform, auth_profile: str) -> AuthProbe:
+    async def probe(
+        self,
+        platform: Platform,
+        auth_profile: str,
+        browser_channel: BrowserChannel = BrowserChannel.CHROME,
+    ) -> AuthProbe:
         return AuthProbe(
             platform=platform,
             auth_profile=auth_profile,
+            browser_channel=browser_channel,
             status=AuthStatus.VALID,
             checked_at="2026-07-29T00:00:00Z",
         )
@@ -144,30 +159,37 @@ class _Authentication:
         auth_profile: str,
         wait_seconds: int,
         *,
+        browser_channel: BrowserChannel = BrowserChannel.CHROME,
         progress: Any | None = None,
-    ) -> tuple[AuthProbe, ...]:
+    ) -> AuthenticationSelection:
         del wait_seconds
         self.ensure_calls.append(platforms)
+        self.requested_channels.append(browser_channel)
         if progress is not None:
             progress.report(
                 "authentication_probe_started",
                 {
                     "platform": platforms[0].value,
                     "auth_profile": auth_profile,
+                    "browser_channel": browser_channel.value,
                 },
             )
         probes: list[AuthProbe] = []
         for platform in platforms:
-            probes.append(await self.probe(platform, auth_profile))
-        return tuple(probes)
+            probes.append(await self.probe(platform, auth_profile, self.selected_channel))
+        return AuthenticationSelection(
+            browser_channel=self.selected_channel,
+            probes=tuple(probes),
+        )
 
     async def logout(
         self,
         platform: Platform,
         auth_profile: str,
         confirmation: str,
+        browser_channel: BrowserChannel = BrowserChannel.CHROME,
     ) -> None:
-        del platform, auth_profile, confirmation
+        del platform, auth_profile, confirmation, browser_channel
 
 
 class _Platform:
@@ -191,6 +213,7 @@ class _Platform:
         self.fetch_failures: list[CollectorError] = []
         self.seen_timeouts: list[int] = []
         self.seen_search_limits: list[int] = []
+        self.seen_channels: list[BrowserChannel] = []
 
     async def search(
         self,
@@ -198,6 +221,7 @@ class _Platform:
         context: PlatformContext,
     ) -> SearchBatch:
         self.seen_timeouts.append(context.request_timeout_seconds)
+        self.seen_channels.append(context.browser_channel)
         self.seen_search_limits.append(request.limit)
         self.search_count += 1
         if self.search_failures:
@@ -234,6 +258,7 @@ class _Platform:
         context: PlatformContext,
     ) -> ResolvedSource:
         self.seen_timeouts.append(context.request_timeout_seconds)
+        self.seen_channels.append(context.browser_channel)
         self.resolve_count += 1
         if self.resolve_failures:
             raise self.resolve_failures.pop(0)
@@ -257,6 +282,7 @@ class _Platform:
         context: PlatformContext,
     ) -> FetchResult:
         self.seen_timeouts.append(context.request_timeout_seconds)
+        self.seen_channels.append(context.browser_channel)
         self.fetch_count += 1
         if self.fetch_failures:
             raise self.fetch_failures.pop(0)
@@ -372,9 +398,10 @@ async def test_cancel_during_authentication_stops_waiting_and_closes_gateway(
             auth_profile: str,
             wait_seconds: int,
             *,
+            browser_channel: BrowserChannel = BrowserChannel.CHROME,
             progress: Any | None = None,
-        ) -> tuple[AuthProbe, ...]:
-            del platforms, auth_profile, wait_seconds, progress
+        ) -> AuthenticationSelection:
+            del platforms, auth_profile, wait_seconds, browser_channel, progress
             started.set()
             try:
                 await asyncio.Event().wait()
@@ -541,8 +568,60 @@ async def test_workflow_forwards_authentication_progress_to_caller(
 
     assert (
         "authentication_probe_started",
-        {"platform": "bilibili", "auth_profile": "default"},
+        {
+            "platform": "bilibili",
+            "auth_profile": "default",
+            "browser_channel": "auto",
+        },
     ) in progress.events
+
+
+@pytest.mark.asyncio
+async def test_workflow_freezes_selected_channel_and_uses_it_for_platforms(
+    tmp_path: Path,
+) -> None:
+    workspace, session_id = _create_session(tmp_path)
+    authentication = _Authentication(selected_channel=BrowserChannel.EDGE)
+    adapters = {platform: _Platform(platform) for platform in PLATFORM_ORDER}
+    workflow = _make_workflow(
+        authentication,
+        adapters,
+        SessionRuntime(lease_ttl_seconds=900),
+    )
+
+    await workflow.run(workspace, session_id)
+
+    session = SessionApplication(store=SqliteSessionStore()).get_session(
+        workspace,
+        session_id,
+    )
+    assert authentication.requested_channels == [BrowserChannel.AUTO]
+    assert session.selected_browser_channel is BrowserChannel.EDGE
+    assert all(
+        adapter.seen_channels
+        and set(adapter.seen_channels) == {BrowserChannel.EDGE}
+        for adapter in adapters.values()
+    )
+
+
+@pytest.mark.asyncio
+async def test_workflow_resume_reuses_frozen_channel_instead_of_auto(
+    tmp_path: Path,
+) -> None:
+    workspace, session_id = _create_session(tmp_path)
+    sessions = SessionApplication(store=SqliteSessionStore())
+    sessions.freeze_browser_channel(workspace, session_id, BrowserChannel.EDGE)
+    authentication = _Authentication(selected_channel=BrowserChannel.EDGE)
+    adapters = {platform: _Platform(platform) for platform in PLATFORM_ORDER}
+    workflow = _make_workflow(
+        authentication,
+        adapters,
+        SessionRuntime(lease_ttl_seconds=900),
+    )
+
+    await workflow.run(workspace, session_id)
+
+    assert authentication.requested_channels == [BrowserChannel.EDGE]
 
 
 @pytest.mark.asyncio

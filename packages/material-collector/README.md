@@ -26,8 +26,9 @@ material-collector result export
 material-collector media fetch-hq
 ```
 
-`run` 会冻结输入，检查三平台登录态，在登录不可用时自动打开有头 Chrome，
-随后用无头 Chrome 并发搜索 Bilibili、抖音和小红书，解析媒体单元并下载低码率
+`run` 会冻结输入，检查三平台登录态；Windows 原生模式默认先尝试 Edge、再尝试
+Chrome，需要登录时打开所选浏览器的有头窗口，随后固定使用同一通道的无头浏览器
+并发搜索 Bilibili、抖音和小红书，解析媒体单元并下载低码率
 代理。低码率代理选择源站最高且不超过 720p 的版本，并在落地后通过本地
 `ffprobe` 再次校验实际分辨率。跨平台版本会分别下载，再由本地音频与视频指纹确认
 同作品并按 `Bilibili > 抖音 > 小红书` 标记主来源；其他版本仍完整保留。全部发现
@@ -54,13 +55,17 @@ uv sync
 
 这会按 `.python-version` 使用 Python 3.14，并在 `.venv` 中安装 `pyproject.toml` 与 `uv.lock` 定义的依赖。
 
-运行时复用本机已安装的 Google Chrome，不要求另行下载 Playwright Chromium。
-登录配置默认保存在当前 Windows 用户的本地应用数据目录，不进入仓库和素材工作区。
+运行时复用本机已安装的 Microsoft Edge 或 Google Chrome，不要求另行下载 Playwright
+Chromium。`auto` 只在 Windows 原生模式按 Edge、Chrome 顺序探测；非 Windows 与
+Docker 环境固定使用 Chrome。显式选择 `edge` 或 `chrome` 时不会跨通道回退。
+登录配置按认证 profile、浏览器通道、平台三层隔离，默认保存在当前 Windows 用户的
+本地应用数据目录，不进入仓库和素材工作区。首次成功通道会写入 session，恢复执行不会
+重新自动选择或切换浏览器。
 浏览器固定以 `--no-proxy-server` 启动，HTTP 下载固定禁用环境代理，因此默认不会
 使用 Windows 系统代理、`HTTP_PROXY`/`HTTPS_PROXY` 或本机 `127.0.0.1:10808`。
 认证探针、有头登录和平台无头浏览器均显式启用 Chromium sandbox；有头登录会输出
 逐平台探针、窗口导航、窗口打开和等待事件，并提示用户检查任务栏。Windows 桌面
-验证会把可见顶层窗口绑定到本次认证 profile 的非 headless Chrome 进程。登录
+验证会把可见顶层窗口绑定到本次认证 profile 的非 headless 浏览器进程。登录
 完成前关闭全部页面会立即进入可恢复的 `auth_required`，不会静默等待完整超时。
 抖音和小红书优先使用已渲染页面的登录标志判断状态，身份接口仅作为兜底，避免
 平台裸接口拒绝请求时把已登录页面误判为未登录。
@@ -77,6 +82,7 @@ uv run material-collector run `
   --workspace D:\video-materials `
   --input .\examples\collection-input.json `
   --query-plans .\examples\query-plans.json `
+  --browser-channel auto `
   --request-timeout-seconds 30 `
   --progress-format jsonl
 ```
