@@ -227,6 +227,31 @@ def test_title_view_bounds_long_windows_paths_without_title_collisions(
     assert first_path.read_bytes() == second_path.read_bytes() == b"video"
 
 
+def test_title_view_shrinks_identity_hints_when_workspace_path_is_long(
+    tmp_path: Path,
+) -> None:
+    padding = "w" * max(1, 120 - len(str(tmp_path)))
+    store = WorkspaceAssetStore(tmp_path / padding)
+    asset = store.import_fetch(fetched_file(tmp_path / "source.mp4", b"video"))
+
+    published = store.publish_title_view(
+        asset,
+        TitleViewPublication(
+            session_id="ses_20260818T062720Z_7b092ecc4215",
+            platform=Platform.BILIBILI,
+            source_id="bilibili_source",
+            source_title="bilibili 测试素材",
+            media_unit_title="bilibili 测试素材",
+        ),
+    )
+
+    assert published.display_relative_path is not None
+    display = store.workspace / published.display_relative_path
+    assert display.is_file()
+    if os.name == "nt":
+        assert len(str(display)) <= 259
+
+
 def test_lossy_title_sanitization_retains_raw_title_identity(tmp_path: Path) -> None:
     store = WorkspaceAssetStore(tmp_path / "workspace")
     asset = store.import_fetch(fetched_file(tmp_path / "source.mp4", b"video"))

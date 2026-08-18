@@ -158,14 +158,18 @@ class WorkspaceAssetStore:
         )
         source_title_limit = _MAX_TITLE_LENGTH
         media_title_limit = _MAX_TITLE_LENGTH
+        source_identity_limit = 10
+        media_identity_limit = 10
         while True:
             source_directory = (
                 f"{_safe_title(publication.source_title, source_title_limit)}__"
-                f"{publication.platform.value}__{_safe_identity(publication.source_id)}"
+                f"{publication.platform.value}__"
+                f"{_safe_identity(publication.source_id, source_identity_limit)}"
             )
             filename = (
                 f"{_safe_title(publication.media_unit_title, media_title_limit)}__"
-                f"{_safe_identity(local_media_unit_id)}{source.suffix.lower()}"
+                f"{_safe_identity(local_media_unit_id, media_identity_limit)}"
+                f"{source.suffix.lower()}"
             )
             target_directory = (
                 self.workspace
@@ -178,20 +182,26 @@ class WorkspaceAssetStore:
             target = target_directory / filename
             if os.name != "nt" or len(str(target)) <= _WINDOWS_MAX_TARGET_LENGTH:
                 break
-            if source_title_limit <= _MIN_HASHED_TITLE_LENGTH and (
-                media_title_limit <= _MIN_HASHED_TITLE_LENGTH
+            if source_title_limit > _MIN_HASHED_TITLE_LENGTH or (
+                media_title_limit > _MIN_HASHED_TITLE_LENGTH
             ):
-                break
-            if source_title_limit >= media_title_limit:
-                source_title_limit = max(
-                    _MIN_HASHED_TITLE_LENGTH,
-                    source_title_limit - 1,
-                )
+                if source_title_limit >= media_title_limit:
+                    source_title_limit = max(
+                        _MIN_HASHED_TITLE_LENGTH,
+                        source_title_limit - 1,
+                    )
+                else:
+                    media_title_limit = max(
+                        _MIN_HASHED_TITLE_LENGTH,
+                        media_title_limit - 1,
+                    )
+            elif source_identity_limit > 0 or media_identity_limit > 0:
+                if source_identity_limit >= media_identity_limit:
+                    source_identity_limit = max(0, source_identity_limit - 1)
+                else:
+                    media_identity_limit = max(0, media_identity_limit - 1)
             else:
-                media_title_limit = max(
-                    _MIN_HASHED_TITLE_LENGTH,
-                    media_title_limit - 1,
-                )
+                break
         relative_path = target.relative_to(self.workspace).as_posix()
         try:
             if os.name == "nt" and len(str(target)) > _WINDOWS_MAX_TARGET_LENGTH:
@@ -357,7 +367,7 @@ def _safe_title(value: str, max_length: int) -> str:
     return cleaned
 
 
-def _safe_identity(value: str) -> str:
+def _safe_identity(value: str, readable_length: int = 10) -> str:
     normalized = unicodedata.normalize("NFKC", value)
     readable = "".join(
         character
@@ -368,6 +378,8 @@ def _safe_identity(value: str) -> str:
     # The title view contains both a source identity and a media-unit identity.
     # Keep their human hint deliberately short so ordinary Windows MAX_PATH
     # workspaces still have room for the actual titles.
-    readable = readable[:10].rstrip(" ._") or "id"
     digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
+    if readable_length <= 0:
+        return digest
+    readable = readable[:readable_length].rstrip(" ._") or "id"
     return f"{readable}--{digest}"
