@@ -90,8 +90,11 @@ material-collector executor invoke \
 ```
 
 - `run` 必须提供 `--input` 和 `--query-plans`；`resume|status|cancel` 必须提供
-  `--session-id`。`--browser-channel` 只用于 `run`，`--show-search-browsers` 只用于
-  `run|resume`。多余、缺失或非法参数在启动子进程前返回结构化错误。
+  `--session-id`。`--browser-channel` 只在 `run` 生效，`--show-search-browsers` 只在
+  `run|resume` 生效。为保留各宿主薄适配器的统一调用形状，命令可以接受
+  其他操作不使用的已声明选项；这些值通过基础类型/范围校验后被忽略，不传给
+  子命令。未声明选项、操作必需字段缺失或非法值在启动子进程前返回
+  结构化错误。发布 Skill 的黄金路径只传入对当前操作有意义的值。
 - `--collector-path` 指定执行器要启动的同版本 Collector 子命令；省略时使用
   当前 Python 环境中的 Collector。发布 Skill 在 Windows 上通过自己的薄适配器
   把已验证的绝对命令同时固定为 executor 和 child；PowerShell 参数不属于
