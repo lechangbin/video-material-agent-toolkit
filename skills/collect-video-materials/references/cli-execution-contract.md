@@ -77,7 +77,7 @@ $invoke = @{
     ProgressFormat = "jsonl"
     MaxRounds = 3
     MaxVideos = 18
-    CollectorPath = "<collector>"
+    ResolvedCollectorPath = "<collector>"
 }
 & $runner @invoke
 ```
@@ -86,13 +86,13 @@ For resume, use `Operation="resume"` and `SessionId="<session-id>"`; omit `Input
 `QueryPlansPath`, `RequestTimeoutSeconds`, `MaxRounds`, and `MaxVideos`.
 
 ```powershell
-& $runner -Operation resume -CollectorPath "<collector>" `
+& $runner -Operation resume -ResolvedCollectorPath "<collector>" `
     -Workspace "<material-workspace>" `
     -SessionId "<session-id>" -ProgressFormat jsonl
-& $runner -Operation status -CollectorPath "<collector>" `
+& $runner -Operation status -ResolvedCollectorPath "<collector>" `
     -Workspace "<material-workspace>" `
     -SessionId "<session-id>"
-& $runner -Operation cancel -CollectorPath "<collector>" `
+& $runner -Operation cancel -ResolvedCollectorPath "<collector>" `
     -Workspace "<material-workspace>" `
     -SessionId "<session-id>"
 ```
@@ -236,6 +236,8 @@ executor or replaces final stdout and runner-managed `status`.
 - `browser_channel_invalid`: pass `auto`, `edge`, or `chrome` for a new `run`.
 - `collector_path_invalid`: pass a non-empty executable path or omit the parameter to use the
   installed command.
+- `resolved_collector_path_invalid`: rerun the bundled resolver and pass its successful absolute
+  `command` through `ResolvedCollectorPath`; do not fall back to PATH.
 - `collector_not_found`: install the CLI with uv or pass an explicit tested `CollectorPath`;
   do not synthesize another launcher.
 - `execution_already_running`: monitor the returned `existing` control record; do not retry.

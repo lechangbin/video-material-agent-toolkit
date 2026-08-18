@@ -64,7 +64,11 @@ def test_skill_links_versioned_schemas_examples_and_read_only_schema_command() -
     assert "schemas/query-plans-2.0.schema.json" in inputs
     assert "examples/collection-input-1.0.min.json" in inputs
     assert "examples/query-plans-2.0.min.json" in inputs
-    assert "material-collector contracts schema" in inputs
+    assert "<collector> contracts schema" in inputs
+    assert (
+        "<collector> contracts normalize --input <collection-input.json> "
+        "--query-plans <query-plans.json>"
+    ) in " ".join(inputs.split())
 
 
 def test_skill_resolver_returns_the_compatible_installed_cli() -> None:
@@ -228,6 +232,7 @@ def test_native_bootstrap_exposes_edge_first_browser_selection() -> None:
         (["-MaxVideos", "0"], "max_videos_invalid"),
         (["-ProgressFormat", "xml"], "progress_format_invalid"),
         (["-CollectorPath", ""], "collector_path_invalid"),
+        (["-ResolvedCollectorPath", ""], "resolved_collector_path_invalid"),
         (["-BrowserChannel", "firefox"], "browser_channel_invalid"),
         (["-Bogus", "value"], "arguments_invalid"),
     ],
@@ -319,6 +324,51 @@ def test_skill_runner_reports_missing_collector_as_structured_error(
     assert completed.returncode == 30
     payload = json.loads(completed.stdout)
     assert payload["error"]["code"] == "collector_not_found"
+
+
+def test_skill_runner_uses_resolver_selected_cli_before_stale_path_entry(
+    tmp_path: Path,
+) -> None:
+    compatible_cli = shutil.which(
+        "material-collector",
+        path=str(Path(sys.executable).parent),
+    )
+    assert compatible_cli is not None
+    stale_bin = tmp_path / "stale-bin"
+    stale_bin.mkdir()
+    stale_marker = tmp_path / "stale-used.txt"
+    (stale_bin / "material-collector.cmd").write_text(
+        f'@echo off\necho stale>"{stale_marker}"\nexit /b 99\n',
+        encoding="utf-8",
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    completed = subprocess.run(
+        [
+            "pwsh",
+            "-NoProfile",
+            "-File",
+            str(RUNNER),
+            "-Operation",
+            "status",
+            "-ResolvedCollectorPath",
+            compatible_cli,
+            "-Workspace",
+            str(workspace),
+            "-SessionId",
+            "ses_missing",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={**os.environ, "PATH": f"{stale_bin}{os.pathsep}{os.environ['PATH']}"},
+    )
+
+    assert completed.returncode == 40
+    assert json.loads(completed.stdout)["error"]["code"] == "session_not_found"
+    assert not stale_marker.exists()
 
 
 @pytest.mark.parametrize("powershell_host", POWERSHELL_HOSTS)

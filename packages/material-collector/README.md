@@ -21,9 +21,12 @@ material-collector status
 material-collector sessions list
 material-collector auth status|login|logout
 material-collector contracts normalize
+material-collector contracts schema
+material-collector executor invoke
 material-collector review list|approve|reject
 material-collector result export
 material-collector media fetch-hq
+material-collector version
 ```
 
 `run` 会冻结输入，只检查 QueryPlans 2.0 范围内的平台登录态；Windows 原生模式默认先尝试 Edge、再尝试
@@ -52,6 +55,10 @@ CLI 内伪造理解、Top-K、落库或素材充分性结果。
 
 `contracts normalize` 是无状态、只读的机器接口，用于让外部编排在创建会话前取得与
 `run` 完全相同的规范化采集输入和 QueryPlan；它不创建会话或写入素材工作区。
+`contracts schema` 从同一组 Pydantic 输入模型返回 Collection input 1.0 与
+QueryPlans 2.0 的机器可读 Schema；`version` 返回 CLI 0.2.0、Skill 协议 1 和支持的
+输入范围。安装后的 Skill 解析器先用 `version` 确认精确兼容性，正常请求直接读取
+Skill 随附的 Schema 和最小示例，不通过运行时失败猜字段。
 
 ## 开发环境
 

@@ -14,12 +14,18 @@ The snapshots are generated from the same Pydantic draft models used by session 
 read-only machine-readable copy from the installed CLI, run exactly:
 
 ```text
-material-collector contracts schema
+<collector> contracts schema
 ```
 
 This command is allowed for version diagnostics; it does not replace the bundled authoring guide
 and must not be used for trial-and-error field discovery. Author the final two artifacts once, then
-perform at most one final `contracts normalize` before `run`.
+perform at most one final normalization before `run`:
+
+```text
+<collector> contracts normalize --input <collection-input.json> --query-plans <query-plans.json>
+```
+
+`<collector>` is the absolute `command` returned by the bundled resolver, not a PATH lookup.
 
 ## Collection input 1.0
 

@@ -4,6 +4,8 @@ param(
 
     [string]$CollectorPath = 'material-collector',
 
+    [string]$ResolvedCollectorPath,
+
     [string]$Workspace,
 
     [string]$InputPath,
@@ -74,29 +76,43 @@ if (@('auto', 'edge', 'chrome') -notcontains $BrowserChannel.ToLowerInvariant())
 $BrowserChannel = $BrowserChannel.ToLowerInvariant()
 
 $collectorPathWasExplicit = $PSBoundParameters.ContainsKey('CollectorPath')
-$executorCommand = Get-Command 'material-collector' -ErrorAction SilentlyContinue
-if ($null -ne $executorCommand) {
-    $executorPath = $executorCommand.Source
+$resolvedCollectorPathWasExplicit = $PSBoundParameters.ContainsKey('ResolvedCollectorPath')
+if ($resolvedCollectorPathWasExplicit) {
+    if ([string]::IsNullOrWhiteSpace($ResolvedCollectorPath) -or
+        -not (Test-Path -LiteralPath $ResolvedCollectorPath -PathType Leaf)) {
+        Stop-WithContractError `
+            -Code 'resolved_collector_path_invalid' `
+            -Message 'ResolvedCollectorPath must be the compatible executable returned by the Skill resolver.' `
+            -ExitCode 40
+    }
+    $executorPath = (Resolve-Path -LiteralPath $ResolvedCollectorPath).Path
+    $CollectorPath = $executorPath
 }
 else {
-    $uvToolCandidate = Join-Path (
-        [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
-    ) '.local\bin\material-collector.exe'
-    if (Test-Path -LiteralPath $uvToolCandidate -PathType Leaf) {
-        $executorPath = $uvToolCandidate
-    }
-    elseif ($collectorPathWasExplicit -and
-        -not [string]::IsNullOrWhiteSpace($CollectorPath) -and
-        (Test-Path -LiteralPath $CollectorPath -PathType Leaf)) {
-        $executorPath = (Resolve-Path -LiteralPath $CollectorPath).Path
+    $executorCommand = Get-Command 'material-collector' -ErrorAction SilentlyContinue
+    if ($null -ne $executorCommand) {
+        $executorPath = $executorCommand.Source
     }
     else {
-        Stop-WithContractError `
-            -Code 'collector_not_found' `
-            -Message 'The material-collector executable could not be resolved.'
+        $uvToolCandidate = Join-Path (
+            [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+        ) '.local\bin\material-collector.exe'
+        if (Test-Path -LiteralPath $uvToolCandidate -PathType Leaf) {
+            $executorPath = $uvToolCandidate
+        }
+        elseif ($collectorPathWasExplicit -and
+            -not [string]::IsNullOrWhiteSpace($CollectorPath) -and
+            (Test-Path -LiteralPath $CollectorPath -PathType Leaf)) {
+            $executorPath = (Resolve-Path -LiteralPath $CollectorPath).Path
+        }
+        else {
+            Stop-WithContractError `
+                -Code 'collector_not_found' `
+                -Message 'The material-collector executable could not be resolved.'
+        }
     }
 }
-if (-not $collectorPathWasExplicit) {
+if (-not $collectorPathWasExplicit -or $resolvedCollectorPathWasExplicit) {
     $CollectorPath = $executorPath
 }
 

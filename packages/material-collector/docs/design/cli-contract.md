@@ -30,6 +30,36 @@ CLI 只是应用服务适配层，不能自行实现查询规划、预算、下�
 
 第一阶段可执行文件名为 `material-collector`。
 
+### 版本与作者契约
+
+```text
+material-collector version
+material-collector contracts schema
+```
+
+两个命令均为无状态、只读接口，不创建会话、不读取或写入素材工作区。
+
+`version` 输出：
+
+```json
+{
+  "schema_version": "material-collector-version/v1",
+  "cli_version": "0.2.0",
+  "skill_protocol_version": 1,
+  "collection_input_schema": {"min": "1.0", "max": "1.0"},
+  "query_plans_schema": {"min": "2.0", "max": "2.0"}
+}
+```
+
+随 Skill 发布的解析器只接受 CLI 版本、Skill 协议和两个输入范围全部相同的工具；
+不兼容时返回结构化安装恢复动作，不通过读取源码或反复试命令猜测兼容性。
+
+`contracts schema` 返回 `schema_version=material-collector-contract-schemas/v1`、
+`status=available`，以及 `contracts.collection_input` 和 `contracts.query_plans` 两个由
+Pydantic 草稿输入模型直接生成的 JSON Schema。它们必须与 Skill 内随版本发布的
+Schema 快照逐对象相等。该命令只用于有界协议诊断；Agent 正常作者流程直接读取 Skill
+快照和示例，不用它反复探测字段。
+
 ### 契约规范化
 
 ```text
@@ -63,7 +93,7 @@ material-collector sessions list --workspace <path>
 - `--request-timeout-seconds` 配置单个平台网络请求的等待上限，默认值为 `30`；
   生效值固化进会话，`resume` 始终继续使用冻结值，不能临时覆盖。
   会话数据库 schema `2` 新增该字段；schema `3` 新增请求和已选浏览器通道。
-  较早会话在只读查询和迁移时兼容为固定 Chrome。
+  本次破坏性版本不迁移较早会话；旧 schema 返回明确的不兼容结果。
 - `run` 和 `resume` 的 `--progress-format` 只控制当前 CLI 进程写入 `stderr`
   的进度表现形式，不属于业务约束，也不固化进会话；默认值为 `jsonl`，
   `text` 用于人类直接观察。

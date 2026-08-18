@@ -24,9 +24,10 @@ PowerShell launcher.
    schema 2.0, declare one non-empty `platform_scope`, and copy that complete scope into every
    expression's `target_platforms`.
 4. On Windows, invoke `scripts/invoke-collector.ps1` for every `run`, `resume`, `status`, or
-   `cancel` and pass the resolved command through `CollectorPath`. On non-Windows hosts, invoke the
-   resolved absolute command with `executor invoke` and the matching documented options;
-   PowerShell is not required.
+   `cancel` and pass the resolver's command through `ResolvedCollectorPath`. This freezes both the
+   executor and child CLI to that validated file even if PATH contains an older installation. On
+   non-Windows hosts, invoke the resolved absolute command with `executor invoke` and the matching
+   documented options; PowerShell is not required.
 5. Pass values only through the documented adapter or executor parameters. Do not edit, copy,
    inline, or reimplement either interface.
 6. For a successfully started `run` or `resume`, persist the returned `control_path`,
