@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -21,7 +22,7 @@ POWERSHELL_HOSTS = [
 ]
 
 
-def _load_resolver():
+def _load_resolver() -> ModuleType:
     spec = importlib.util.spec_from_file_location("material_collector_skill_resolver", RESOLVER)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

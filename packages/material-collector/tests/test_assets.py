@@ -168,7 +168,10 @@ def test_title_view_falls_back_to_verified_copy(
 ) -> None:
     store = WorkspaceAssetStore(tmp_path / "workspace")
     asset = store.import_fetch(fetched_file(tmp_path / "source.mp4", b"copy-me"))
-    monkeypatch.setattr(asset_module.os, "link", lambda *_args: _raise_os_error())
+    monkeypatch.setattr(
+        "material_collector.infrastructure.assets.os.link",
+        lambda *_args: _raise_os_error(),
+    )
 
     published = store.publish_title_view(
         asset,
@@ -262,7 +265,10 @@ def test_copy_fallback_verifies_before_publishing_visible_target(
 ) -> None:
     store = WorkspaceAssetStore(tmp_path / "workspace")
     asset = store.import_fetch(fetched_file(tmp_path / "source.mp4", b"video"))
-    monkeypatch.setattr(asset_module.os, "link", lambda *_args: _raise_os_error())
+    monkeypatch.setattr(
+        "material_collector.infrastructure.assets.os.link",
+        lambda *_args: _raise_os_error(),
+    )
 
     def corrupt_copy(
         _source: object,
@@ -273,7 +279,10 @@ def test_copy_fallback_verifies_before_publishing_visible_target(
         del length
         output.write(b"corrupt")  # type: ignore[attr-defined]
 
-    monkeypatch.setattr(asset_module.shutil, "copyfileobj", corrupt_copy)
+    monkeypatch.setattr(
+        "material_collector.infrastructure.assets.shutil.copyfileobj",
+        corrupt_copy,
+    )
 
     with pytest.raises(CollectorError) as captured:
         store.publish_title_view(
@@ -298,7 +307,10 @@ def test_retry_repairs_an_invalid_existing_copy(
 ) -> None:
     store = WorkspaceAssetStore(tmp_path / "workspace")
     asset = store.import_fetch(fetched_file(tmp_path / "source.mp4", b"video"))
-    monkeypatch.setattr(asset_module.os, "link", lambda *_args: _raise_os_error())
+    monkeypatch.setattr(
+        "material_collector.infrastructure.assets.os.link",
+        lambda *_args: _raise_os_error(),
+    )
     publication = TitleViewPublication(
         session_id="ses_repair_copy",
         platform=Platform.BILIBILI,
@@ -323,7 +335,10 @@ def test_title_view_reports_retryable_structured_publish_failure(
 ) -> None:
     store = WorkspaceAssetStore(tmp_path / "workspace")
     asset = store.import_fetch(fetched_file(tmp_path / "source.mp4", b"video"))
-    monkeypatch.setattr(asset_module.os, "link", lambda *_args: _raise_os_error())
+    monkeypatch.setattr(
+        "material_collector.infrastructure.assets.os.link",
+        lambda *_args: _raise_os_error(),
+    )
     monkeypatch.setattr(
         asset_module,
         "_copy_atomically",
