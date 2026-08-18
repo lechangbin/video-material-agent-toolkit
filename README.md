@@ -12,6 +12,7 @@
   理解、Top-K 选择和有界补搜编排为可追踪工作流。
 
 当前发布版本为 `0.1.3`，支持 Windows x64 和 CPython `>=3.14.6,<3.15`。
+Docker 部署另支持 Linux/amd64 容器，并通过本机 noVNC 页面完成交互式平台登录。
 
 > 本项目提供技术工具，不授予任何第三方视频、音乐、肖像、平台数据或商标的使用权。
 > 使用者必须遵守目标平台条款、适用法律和素材权利要求。不要使用本项目绕过访问控制、
@@ -58,6 +59,40 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap-agent.ps1 `
 `SEMVIDEO_API_KEY`；首次搜索需要登录时，用户在可见浏览器中完成扫码。视频工作区路径
 也必须由用户明确指定，然后 Agent 才运行 `semvideo init` 和 `semvideo doctor`。
 
+## Docker 一条命令部署
+
+已安装并启动 Docker Desktop 后，在仓库根目录执行：
+
+```powershell
+docker compose up -d --build
+```
+
+该命令构建并启动包含 `material-collector`、`semvideo`、Google Chrome、FFmpeg 和
+noVNC 桌面的 Linux/amd64 容器。默认把运行数据持久化到 Git 忽略的
+`./docker-data`，并只在本机回环地址开放登录页面：
+
+```text
+http://127.0.0.1:6080/vnc.html?autoconnect=1&resize=scale
+```
+
+部署成功后仍需明确初始化一个视频工作区：
+
+```powershell
+docker compose exec toolkit semvideo init /data/workspace --json
+docker compose exec toolkit semvideo doctor --workspace /data/workspace --json
+```
+
+运行采集命令使用同一个长驻容器，例如：
+
+```powershell
+docker compose exec toolkit material-collector sessions list --workspace /data/workspace
+```
+
+API Key 只从启动 Compose 的进程环境传入，不写进镜像、构建参数或仓库。宿主数据目录、
+首次登录、CLI 调用方式、Agent Skills 边界和停止方式见 [Docker 部署文档](docs/docker.md)。
+容器以非 root 用户运行，并使用 Playwright 官方建议的 seccomp 配置保持 Chromium
+sandbox 开启。
+
 ## 仓库结构
 
 ```text
@@ -73,6 +108,10 @@ scripts/
   bootstrap-agent.ps1
   build-release.ps1
   install-tools.ps1
+docker/
+  toolkit-entrypoint.sh
+Dockerfile
+compose.yaml
 ```
 
 两个源码快照对应的原始 Git 提交见 [SOURCE_COMMITS.md](SOURCE_COMMITS.md)。

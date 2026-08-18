@@ -47,9 +47,60 @@ To inspect prerequisites without changing the machine, run:
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap-agent.ps1 -CheckOnly
 ```
 
+## Remote Windows verification
+
+Before running remote compatibility, packaged-CLI, PowerShell, or browser-channel tests, read
+`SSH-HANDOFF.md` and follow its verified connection, host-fingerprint, recovery, and safety
+instructions.
+
+- Use the document's Windows entry for Windows PowerShell 5.1/7, Edge/Chrome, packaged executable,
+  and host integration tests. Invoke the required PowerShell edition explicitly inside the remote
+  session.
+- Use the Debian entry only for Linux, WSL, or Docker work; a passing Debian test is not evidence of
+  native Windows compatibility.
+- SSH is suitable for non-interactive execution. Visible browser login tests additionally require an
+  active interactive desktop on the target Windows machine and human confirmation; SSH success alone
+  does not satisfy that acceptance criterion.
+- Record the remote host, shell version, browser channel, command result, and structured error output
+  needed to reproduce each compatibility conclusion, without copying credentials or private-key
+  material into the repository or logs.
+
+## Docker deployment
+
+- Treat `compose.yaml` as the supported container entry point. Build and start it with
+  `docker compose up -d --build` from the repository root.
+- Never pass API keys through Docker build arguments or bake them into an image. Docker mode may
+  inherit `SEMVIDEO_API_KEY` from the launching process environment only.
+- Preserve `/data` across container recreation. It owns browser authentication profiles, material
+  workspaces, Semvideo state, and model caches; it must never be copied into an image or committed.
+- The noVNC port must remain bound to host loopback by default. Interactive platform login is still
+  a human action performed through the local noVNC page.
+- Validate container changes with `docker compose config --quiet`, an image build, and smoke checks
+  for both `material-collector --help` and `semvideo --version --json`.
+
 ## Repository changes
 
 - Preserve the MIT `LICENSE` and third-party notices in distributions.
 - Keep release installation checksum-verified.
 - Validate PowerShell syntax, all four Skills, both test suites, Ruff, and strict mypy before a
   release-affecting change.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and implementation specs are tracked in GitHub Issues. Follow
+`docs/agents/issue-tracker.md` when creating, reading, relating, updating, or closing
+work items.
+
+### Triage labels
+
+Use the repository's standard triage labels and transitions described in
+`docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This repository contains multiple bounded contexts. Start with
+`CONTEXT-MAP.md`, then read the relevant package `CONTEXT.md` and ADRs.
+Follow `docs/agents/domain.md` when changing domain terminology, boundaries,
+or architectural decisions.
