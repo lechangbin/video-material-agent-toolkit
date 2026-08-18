@@ -458,6 +458,35 @@ def test_contracts_normalize_uses_the_session_creation_contracts(
     assert payload["query_plans"]["plans"][0]["query_plan_id"] == "qp_seg_001"
 
 
+def test_contracts_schema_exposes_authoritative_read_only_contracts() -> None:
+    result = CliRunner().invoke(app, ["contracts", "schema"])
+
+    assert result.exit_code == 0, result.stdout
+    payload = parse_single_json_line(result.stdout)
+    assert payload["schema_version"] == "material-collector-contract-schemas/v1"
+    assert payload["status"] == "available"
+    assert payload["contracts"]["collection_input"]["properties"]["schema_version"][
+        "const"
+    ] == "1.0"
+    assert payload["contracts"]["query_plans"]["properties"]["schema_version"][
+        "const"
+    ] == "2.0"
+
+
+def test_version_exposes_cli_and_agent_protocol_compatibility() -> None:
+    result = CliRunner().invoke(app, ["version"])
+
+    assert result.exit_code == 0, result.stdout
+    payload = parse_single_json_line(result.stdout)
+    assert payload == {
+        "schema_version": "material-collector-version/v1",
+        "cli_version": "0.2.0",
+        "skill_protocol_version": 1,
+        "collection_input_schema": {"min": "1.0", "max": "1.0"},
+        "query_plans_schema": {"min": "2.0", "max": "2.0"},
+    }
+
+
 def test_contracts_normalize_freezes_a_bilibili_only_platform_scope(
     tmp_path: Path,
 ) -> None:

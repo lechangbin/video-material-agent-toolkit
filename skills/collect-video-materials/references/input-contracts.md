@@ -3,6 +3,24 @@
 Create both inputs as UTF-8 JSON. These are the complete current request shapes. Do not probe the
 CLI with trial files. This release does not accept or migrate older contract versions.
 
+Release artifacts:
+
+- [Collection input 1.0 JSON Schema](schemas/collection-input-1.0.schema.json) and
+  [minimal example](examples/collection-input-1.0.min.json)
+- [QueryPlans 2.0 JSON Schema](schemas/query-plans-2.0.schema.json) and
+  [minimal example](examples/query-plans-2.0.min.json)
+
+The snapshots are generated from the same Pydantic draft models used by session creation. For a
+read-only machine-readable copy from the installed CLI, run exactly:
+
+```text
+material-collector contracts schema
+```
+
+This command is allowed for version diagnostics; it does not replace the bundled authoring guide
+and must not be used for trial-and-error field discovery. Author the final two artifacts once, then
+perform at most one final `contracts normalize` before `run`.
+
 ## Collection input 1.0
 
 ```json

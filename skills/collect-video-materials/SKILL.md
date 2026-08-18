@@ -10,19 +10,26 @@ PowerShell launcher.
 
 ## Invoke
 
-1. Read [references/input-contracts.md](references/input-contracts.md), then read
+1. Resolve the compatible CLI exactly once with
+   `python <skill-root>/scripts/resolve_material_collector.py` (use `py -3.14` instead of
+   `python` on Windows when that is the configured Python launcher). Save the successful JSON
+   `command` value as the absolute Collector command. Do not scan PATH, source, executables, or
+   installation directories yourself. Stop on `material_collector_cli_not_found` or
+   `material_collector_cli_incompatible` and report its structured recovery object.
+2. Read [references/input-contracts.md](references/input-contracts.md), then read
    [references/cli-execution-contract.md](references/cli-execution-contract.md). These references
    expose the complete request shapes and commands; do not discover either contract with `--help`,
    `contracts normalize`, trial JSON, source inspection, or PATH probing.
-2. Validate that the workspace and versioned JSON inputs are explicit. QueryPlans must use
+3. Validate that the workspace and versioned JSON inputs are explicit. QueryPlans must use
    schema 2.0, declare one non-empty `platform_scope`, and copy that complete scope into every
    expression's `target_platforms`.
-3. On Windows, invoke `scripts/invoke-collector.ps1` for every `run`, `resume`, `status`, or
-   `cancel`. On non-Windows hosts, invoke `material-collector executor invoke` with the matching
-   documented options; PowerShell is not required.
-4. Pass values only through the documented adapter or executor parameters. Do not edit, copy,
+4. On Windows, invoke `scripts/invoke-collector.ps1` for every `run`, `resume`, `status`, or
+   `cancel` and pass the resolved command through `CollectorPath`. On non-Windows hosts, invoke the
+   resolved absolute command with `executor invoke` and the matching documented options;
+   PowerShell is not required.
+5. Pass values only through the documented adapter or executor parameters. Do not edit, copy,
    inline, or reimplement either interface.
-5. For a successfully started `run` or `resume`, persist the returned `control_path`,
+6. For a successfully started `run` or `resume`, persist the returned `control_path`,
    `process_id`, `collector_process_id`, `session_id`, `stdout_path`, and `stderr_path` in the
    current Agent task.
    `status` and `cancel` instead relay the CLI result and do not create an executor record.
@@ -72,9 +79,13 @@ Use the final JSON as the authority:
   already advanced to a checkpoint.
 - `workflow_retryable` plus `runtime.state=idle` and `runtime.next_stage=search` means no search
   batch was available to advance; one runner-managed `resume` may retry the still-open stage.
-- `action_required.actor=human`: report the requested human action and wait.
-- `action_required.actor=agent`: read the referenced request artifact, create the versioned
-  decision artifact, and resume through the bundled runner.
+- `action_required.actor=human` with `type=manual_review_required`: report the requested review,
+  wait for the human, then use only the documented `review list`, `review approve`, or
+  `review reject` commands before resuming. Never approve or reject on the human's behalf.
+- Any other `action_required.actor=human`: report the exact action and wait; do not invent a
+  decision file or alternate login command.
+- `action_required.actor=agent`: follow only the named versioned artifact contract. If no such
+  contract is linked in the result or this Skill, stop with a contract error instead of guessing.
 - `status=integration_required`: stop at the declared external integration boundary.
 - `status=cancelled|completed`: stop; do not resume a terminal session.
 

@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 import pytest
 
-from material_collector.core.contracts import normalize_contracts
+from material_collector.core.contracts import (
+    contract_schema_bundle,
+    normalize_contracts,
+)
 from material_collector.core.errors import ContractError
+
+REPOSITORY_ROOT = Path(__file__).parents[3]
+CONTRACT_REFERENCES = REPOSITORY_ROOT / "skills" / "collect-video-materials" / "references"
 
 
 def collection_document() -> dict[str, Any]:
@@ -64,6 +72,40 @@ def query_plan_document() -> dict[str, Any]:
             },
         ],
     }
+
+
+def test_bundled_contract_schemas_match_authoritative_pydantic_models() -> None:
+    schemas = contract_schema_bundle()
+
+    assert json.loads(
+        (CONTRACT_REFERENCES / "schemas" / "collection-input-1.0.schema.json").read_text(
+            encoding="utf-8"
+        )
+    ) == schemas["collection_input"]
+    assert json.loads(
+        (CONTRACT_REFERENCES / "schemas" / "query-plans-2.0.schema.json").read_text(
+            encoding="utf-8"
+        )
+    ) == schemas["query_plans"]
+
+
+def test_bundled_minimal_examples_normalize_with_authoritative_models() -> None:
+    collection = json.loads(
+        (CONTRACT_REFERENCES / "examples" / "collection-input-1.0.min.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    query_plans = json.loads(
+        (CONTRACT_REFERENCES / "examples" / "query-plans-2.0.min.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    normalized = normalize_contracts(collection, query_plans)
+
+    assert normalized.collection_input.schema_version == "1.0"
+    assert normalized.query_plans.schema_version == "2.0"
+    assert normalized.query_plans.platform_scope == ("bilibili",)
 
 
 def test_contracts_generate_ids_and_canonicalize_order() -> None:

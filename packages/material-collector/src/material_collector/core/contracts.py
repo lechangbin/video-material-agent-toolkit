@@ -185,6 +185,15 @@ class QueryPlansDraft(_ContractModel):
     plans: tuple[QueryPlanDraft, ...] = Field(min_length=1)
 
 
+def contract_schema_bundle() -> dict[str, dict[str, Any]]:
+    """Return authoring schemas generated from the authoritative draft models."""
+
+    return {
+        "collection_input": CollectionInputDraft.model_json_schema(mode="validation"),
+        "query_plans": QueryPlansDraft.model_json_schema(mode="validation"),
+    }
+
+
 class VisualFacet(_ContractModel):
     facet_id: str
     description: str

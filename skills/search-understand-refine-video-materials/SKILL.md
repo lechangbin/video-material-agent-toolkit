@@ -18,7 +18,9 @@ Before starting, read:
 3. the installed `semvideo/SKILL.md`;
 4. the sibling `select-video-segments/SKILL.md` and its selection contract.
 
-Use the bundled Collector runner for every Collector operation. Use only Semvideo's
+Resolve the Collector once through the direct collection Skill and reuse that validated absolute
+command for workflow initialization and every Collector runner call. Use the bundled Collector
+runner for every lifecycle operation. Use only Semvideo's
 public CLI and always pass its mandatory context gate before a processing or
 recovery mutation. Run segment selection in the isolated subagent required by
 `select-video-segments`.
@@ -51,7 +53,7 @@ to the Top-K subagent and do not derive it from search-result titles.
 
 Run `scripts/init_workflow.py` to freeze semantic input, paths, hashes, budgets,
 normalized optional IDs, and workflow identity. Pass the absolute installed
-`material-collector` executable through `--collector`; initialization calls its
+Collector command returned by the direct Skill resolver through `--collector`; initialization calls its
 read-only `contracts normalize` command so the frozen snapshot exactly matches
 session creation. If the workflow root already
 contains conflicting frozen input, stop instead of overwriting it.

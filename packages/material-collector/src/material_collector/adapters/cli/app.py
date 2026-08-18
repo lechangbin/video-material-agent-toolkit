@@ -15,6 +15,7 @@ import typer
 from pydantic import BaseModel, ValidationError
 from typer._click.exceptions import Abort, ClickException
 
+from material_collector import __version__
 from material_collector.application.media_actions import MediaApplication
 from material_collector.application.session_runtime import SessionControlApplication
 from material_collector.application.sessions import (
@@ -24,7 +25,7 @@ from material_collector.application.sessions import (
 )
 from material_collector.application.source_manifest import SourceManifestApplication
 from material_collector.application.workflow import CollectionWorkflow, WorkflowResult
-from material_collector.core.contracts import normalize_contracts
+from material_collector.core.contracts import contract_schema_bundle, normalize_contracts
 from material_collector.core.errors import (
     CollectorError,
     ContractError,
@@ -470,6 +471,34 @@ def normalize_contracts_command(
         }
 
     _execute(operation)
+
+
+@contracts_app.command("schema")
+def contract_schema_command() -> None:
+    """Return the read-only authoring schemas used by the runtime models."""
+
+    _execute(
+        lambda: {
+            "schema_version": "material-collector-contract-schemas/v1",
+            "status": "available",
+            "contracts": contract_schema_bundle(),
+        }
+    )
+
+
+@app.command("version")
+def version_command() -> None:
+    """Return CLI and Agent-contract compatibility without changing state."""
+
+    _emit_final(
+        {
+            "schema_version": "material-collector-version/v1",
+            "cli_version": __version__,
+            "skill_protocol_version": 1,
+            "collection_input_schema": {"min": "1.0", "max": "1.0"},
+            "query_plans_schema": {"min": "2.0", "max": "2.0"},
+        }
+    )
 
 
 @app.command("run")

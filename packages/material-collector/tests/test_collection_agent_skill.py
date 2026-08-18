@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -12,10 +14,19 @@ import pytest
 REPOSITORY_ROOT = Path(__file__).parents[3]
 SKILL_ROOT = REPOSITORY_ROOT / "skills" / "collect-video-materials"
 RUNNER = SKILL_ROOT / "scripts" / "invoke-collector.ps1"
+RESOLVER = SKILL_ROOT / "scripts" / "resolve_material_collector.py"
 BOOTSTRAP = REPOSITORY_ROOT / "scripts" / "bootstrap-agent.ps1"
 POWERSHELL_HOSTS = [
     host for host in ("powershell", "pwsh") if shutil.which(host) is not None
 ]
+
+
+def _load_resolver():
+    spec = importlib.util.spec_from_file_location("material_collector_skill_resolver", RESOLVER)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_skill_distinguishes_partial_search_progress_from_final_status() -> None:
@@ -42,6 +53,121 @@ def test_skill_exposes_complete_inputs_and_lifecycle_commands_without_probing() 
     assert '"target_platforms"' in inputs
     for operation in ("run", "resume", "status", "cancel"):
         assert f"--operation {operation}" in execution
+
+
+def test_skill_links_versioned_schemas_examples_and_read_only_schema_command() -> None:
+    inputs = (SKILL_ROOT / "references" / "input-contracts.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "schemas/collection-input-1.0.schema.json" in inputs
+    assert "schemas/query-plans-2.0.schema.json" in inputs
+    assert "examples/collection-input-1.0.min.json" in inputs
+    assert "examples/query-plans-2.0.min.json" in inputs
+    assert "material-collector contracts schema" in inputs
+
+
+def test_skill_resolver_returns_the_compatible_installed_cli() -> None:
+    resolved_cli = shutil.which(
+        "material-collector",
+        path=str(Path(sys.executable).parent),
+    )
+    assert resolved_cli is not None
+    environment = os.environ.copy()
+    environment["MATERIAL_COLLECTOR_CLI"] = resolved_cli
+
+    completed = subprocess.run(
+        [sys.executable, str(RESOLVER)],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=environment,
+        timeout=10,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout)
+    assert payload["schema_version"] == 1
+    assert payload["ok"] is True
+    assert payload["command"] == str(Path(resolved_cli).resolve())
+    assert payload["cli_version"] == "0.2.0"
+    assert payload["skill_protocol_version"] == 1
+
+
+def test_skill_resolver_accepts_only_the_matching_cli_protocol(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    resolver = _load_resolver()
+    candidate = tmp_path / "material-collector.exe"
+    candidate.touch()
+    monkeypatch.setenv("MATERIAL_COLLECTOR_CLI", str(candidate))
+    monkeypatch.setattr(
+        resolver.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0],
+            0,
+            json.dumps(
+                {
+                    "schema_version": "material-collector-version/v1",
+                    "cli_version": "0.2.0",
+                    "skill_protocol_version": 1,
+                    "collection_input_schema": {"min": "1.0", "max": "1.0"},
+                    "query_plans_schema": {"min": "2.0", "max": "2.0"},
+                }
+            ),
+            "",
+        ),
+    )
+
+    exit_code = resolver.main()
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert payload["ok"] is True
+    assert payload["command"] == str(candidate.resolve())
+    assert payload["cli_version"] == "0.2.0"
+    assert payload["skill_protocol_version"] == 1
+
+
+def test_skill_resolver_reports_an_incompatible_cli_without_source_probing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    resolver = _load_resolver()
+    candidate = tmp_path / "material-collector.exe"
+    candidate.touch()
+    monkeypatch.setenv("MATERIAL_COLLECTOR_CLI", str(candidate))
+    monkeypatch.setattr(
+        resolver.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0],
+            0,
+            json.dumps(
+                {
+                    "schema_version": "material-collector-version/v1",
+                    "cli_version": "0.1.3",
+                    "skill_protocol_version": 1,
+                    "collection_input_schema": {"min": "1.0", "max": "1.0"},
+                    "query_plans_schema": {"min": "2.0", "max": "2.0"},
+                }
+            ),
+            "",
+        ),
+    )
+
+    exit_code = resolver.main()
+
+    payload = json.loads(capsys.readouterr().err)
+    assert exit_code == 4
+    assert payload["code"] == "material_collector_cli_incompatible"
+    assert payload["expected"]["cli_version"] == "0.2.0"
+    assert payload["actual"]["cli_version"] == "0.1.3"
 
 
 @pytest.mark.parametrize("powershell_host", POWERSHELL_HOSTS)
