@@ -1,6 +1,7 @@
 # Source commits
 
-Toolkit version `0.2.0` imports source snapshots from these local Git repositories:
+Toolkit version `0.2.1` retains the source snapshots imported for `0.2.0` and applies the
+repository-local low-rate proxy integrity patch tracked in GitHub issue #27:
 
 | Package | Commit | Subject |
 | --- | --- | --- |

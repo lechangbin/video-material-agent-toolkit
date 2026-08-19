@@ -9,7 +9,7 @@ python <skill-root>/scripts/resolve_material_collector.py
 ```
 
 On Windows, `py -3.14` may replace `python` when it is the configured launcher. A successful
-result has `ok=true`, an absolute `command`, `cli_version=0.2.0`,
+result has `ok=true`, an absolute `command`, `cli_version=0.2.1`,
 `skill_protocol_version=1`, Collection input range 1.0..1.0, and QueryPlans range 2.0..2.0.
 Use that one `command` value for the rest of the task. The resolver owns the bounded candidate
 list and protocol check; the Agent must not add PATH scans, source inspection, trial commands, or

@@ -96,7 +96,7 @@ def test_skill_resolver_returns_the_compatible_installed_cli() -> None:
     assert payload["schema_version"] == 1
     assert payload["ok"] is True
     assert payload["command"] == str(Path(resolved_cli).resolve())
-    assert payload["cli_version"] == "0.2.0"
+    assert payload["cli_version"] == "0.2.1"
     assert payload["skill_protocol_version"] == 1
 
 
@@ -118,7 +118,7 @@ def test_skill_resolver_accepts_only_the_matching_cli_protocol(
             json.dumps(
                 {
                     "schema_version": "material-collector-version/v1",
-                    "cli_version": "0.2.0",
+                    "cli_version": "0.2.1",
                     "skill_protocol_version": 1,
                     "collection_input_schema": {"min": "1.0", "max": "1.0"},
                     "query_plans_schema": {"min": "2.0", "max": "2.0"},
@@ -134,7 +134,7 @@ def test_skill_resolver_accepts_only_the_matching_cli_protocol(
     assert exit_code == 0
     assert payload["ok"] is True
     assert payload["command"] == str(candidate.resolve())
-    assert payload["cli_version"] == "0.2.0"
+    assert payload["cli_version"] == "0.2.1"
     assert payload["skill_protocol_version"] == 1
 
 
@@ -171,7 +171,7 @@ def test_skill_resolver_reports_an_incompatible_cli_without_source_probing(
     payload = json.loads(capsys.readouterr().err)
     assert exit_code == 4
     assert payload["code"] == "material_collector_cli_incompatible"
-    assert payload["expected"]["cli_version"] == "0.2.0"
+    assert payload["expected"]["cli_version"] == "0.2.1"
     assert payload["actual"]["cli_version"] == "0.1.3"
 
 

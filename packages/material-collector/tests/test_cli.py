@@ -480,7 +480,7 @@ def test_version_exposes_cli_and_agent_protocol_compatibility() -> None:
     payload = parse_single_json_line(result.stdout)
     assert payload == {
         "schema_version": "material-collector-version/v1",
-        "cli_version": "0.2.0",
+        "cli_version": "0.2.1",
         "skill_protocol_version": 1,
         "collection_input_schema": {"min": "1.0", "max": "1.0"},
         "query_plans_schema": {"min": "2.0", "max": "2.0"},

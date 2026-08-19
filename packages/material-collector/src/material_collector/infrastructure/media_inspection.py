@@ -141,10 +141,52 @@ class FingerprintComparison:
 def inspect_media(
     path: Path,
     *,
+    ffmpeg_executable: str = "ffmpeg",
     ffprobe_executable: str = "ffprobe",
     timeout_seconds: float = 30.0,
 ) -> MediaProbe:
-    """Return duration, primary video dimensions, container and stream counts."""
+    """Return structural facts only after every primary media packet decodes."""
+
+    probe = _probe_media(
+        path,
+        ffprobe_executable=ffprobe_executable,
+        timeout_seconds=timeout_seconds,
+    )
+    if probe.video_stream_count:
+        _run(
+            [
+                ffmpeg_executable,
+                "-v",
+                "error",
+                "-xerror",
+                "-err_detect",
+                "explode",
+                "-nostdin",
+                "-i",
+                str(probe.path),
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a:0?",
+                "-sn",
+                "-dn",
+                "-f",
+                "null",
+                "-",
+            ],
+            timeout_seconds=_decode_timeout_seconds(probe, timeout_seconds),
+            operation="media decoding",
+        )
+    return probe
+
+
+def _probe_media(
+    path: Path,
+    *,
+    ffprobe_executable: str,
+    timeout_seconds: float,
+) -> MediaProbe:
+    """Return structural metadata without decoding the complete timeline."""
 
     media_path = _validated_media_path(path)
     completed = _run(
@@ -195,7 +237,7 @@ def fingerprint_media(
 ) -> MediaFingerprint:
     """Generate Chromaprint audio hashes and fixed-sample grayscale dHashes."""
 
-    probe = inspect_media(
+    probe = _probe_media(
         path,
         ffprobe_executable=ffprobe_executable,
         timeout_seconds=min(timeout_seconds, 30.0),
@@ -396,6 +438,17 @@ def _validated_media_path(path: Path) -> Path:
     if not resolved.is_file():
         raise MediaInspectionError("The media path is not a regular file.")
     return resolved
+
+
+def _decode_timeout_seconds(probe: MediaProbe, minimum_seconds: float) -> float:
+    """Allow complete 720p validation to run at least as long as the media timeline."""
+
+    if minimum_seconds <= 0:
+        raise ValueError("timeout_seconds must be greater than zero")
+    duration = probe.duration_seconds
+    if duration is None:
+        return max(minimum_seconds, 300.0)
+    return max(minimum_seconds, min(duration + 30.0, 3_600.0))
 
 
 def _unpack_chromaprint(value: bytes) -> tuple[int, ...]:
