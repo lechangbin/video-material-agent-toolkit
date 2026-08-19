@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 WORKFLOW_SCHEMA = "video-material-workflow/v1"
-PLATFORMS = ("bilibili", "douyin", "xiaohongshu")
+PLATFORMS = ("bilibili", "douyin", "xiaohongshu", "youtube", "tiktok")
 
 
 class WorkflowInitError(RuntimeError):
@@ -155,18 +155,21 @@ def _validate_orchestration_contracts(
     segment_ids = [segment["segment_id"] for segment in segments]
     plan_refs: list[dict[str, str]] = []
     for plan in plans:
-        queries = plan.get("initial_queries")
-        if not isinstance(queries, list) or not queries:
-            raise WorkflowInitError("normalized QueryPlan has no expressions")
-        for query in queries:
-            targets = query.get("target_platforms") if isinstance(query, dict) else None
-            if (
-                not isinstance(targets, list)
-                or targets != normalized_scope
-            ):
-                raise WorkflowInitError(
-                    "every query expression must target the complete platform scope"
-                )
+        branches = plan.get("platform_branches")
+        if not isinstance(branches, list) or not branches:
+            raise WorkflowInitError("normalized QueryPlan has no platform branches")
+        branch_platforms = [
+            branch.get("platform") if isinstance(branch, dict) else None
+            for branch in branches
+        ]
+        if branch_platforms != normalized_scope:
+            raise WorkflowInitError(
+                "every QueryPlan must cover the complete platform scope in canonical order"
+            )
+        for branch in branches:
+            queries = branch.get("queries") if isinstance(branch, dict) else None
+            if not isinstance(queries, list) or not queries:
+                raise WorkflowInitError("normalized platform branch has no expressions")
         plan_refs.append(
             {
                 "segment_id": plan["segment_id"],

@@ -51,7 +51,7 @@ def test_skill_exposes_complete_inputs_and_lifecycle_commands_without_probing() 
     assert "do not discover either contract with `--help`" in " ".join(skill.split())
     assert '"full_script"' in inputs
     assert '"platform_scope"' in inputs
-    assert '"target_platforms"' in inputs
+    assert '"platform_branches"' in inputs
     for operation in ("run", "resume", "status", "cancel"):
         assert f"--operation {operation}" in execution
 
@@ -62,9 +62,9 @@ def test_skill_links_versioned_schemas_examples_and_read_only_schema_command() -
     )
 
     assert "schemas/collection-input-1.0.schema.json" in inputs
-    assert "schemas/query-plans-2.0.schema.json" in inputs
+    assert "schemas/query-plans-3.0.schema.json" in inputs
     assert "examples/collection-input-1.0.min.json" in inputs
-    assert "examples/query-plans-2.0.min.json" in inputs
+    assert "examples/query-plans-3.0.min.json" in inputs
     assert "<collector> contracts schema" in inputs
     assert (
         "<collector> contracts normalize --input <collection-input.json> "
@@ -96,7 +96,7 @@ def test_skill_resolver_returns_the_compatible_installed_cli() -> None:
     assert payload["schema_version"] == 1
     assert payload["ok"] is True
     assert payload["command"] == str(Path(resolved_cli).resolve())
-    assert payload["cli_version"] == "0.2.1"
+    assert payload["cli_version"] == "0.3.0"
     assert payload["skill_protocol_version"] == 1
 
 
@@ -118,10 +118,10 @@ def test_skill_resolver_accepts_only_the_matching_cli_protocol(
             json.dumps(
                 {
                     "schema_version": "material-collector-version/v1",
-                    "cli_version": "0.2.1",
+                    "cli_version": "0.3.0",
                     "skill_protocol_version": 1,
                     "collection_input_schema": {"min": "1.0", "max": "1.0"},
-                    "query_plans_schema": {"min": "2.0", "max": "2.0"},
+                    "query_plans_schema": {"min": "3.0", "max": "3.0"},
                 }
             ),
             "",
@@ -134,7 +134,7 @@ def test_skill_resolver_accepts_only_the_matching_cli_protocol(
     assert exit_code == 0
     assert payload["ok"] is True
     assert payload["command"] == str(candidate.resolve())
-    assert payload["cli_version"] == "0.2.1"
+    assert payload["cli_version"] == "0.3.0"
     assert payload["skill_protocol_version"] == 1
 
 
@@ -159,7 +159,7 @@ def test_skill_resolver_reports_an_incompatible_cli_without_source_probing(
                     "cli_version": "0.1.3",
                     "skill_protocol_version": 1,
                     "collection_input_schema": {"min": "1.0", "max": "1.0"},
-                    "query_plans_schema": {"min": "2.0", "max": "2.0"},
+                    "query_plans_schema": {"min": "3.0", "max": "3.0"},
                 }
             ),
             "",
@@ -171,7 +171,7 @@ def test_skill_resolver_reports_an_incompatible_cli_without_source_probing(
     payload = json.loads(capsys.readouterr().err)
     assert exit_code == 4
     assert payload["code"] == "material_collector_cli_incompatible"
-    assert payload["expected"]["cli_version"] == "0.2.1"
+    assert payload["expected"]["cli_version"] == "0.3.0"
     assert payload["actual"]["cli_version"] == "0.1.3"
 
 

@@ -1,7 +1,7 @@
 # Source commits
 
-Toolkit version `0.2.1` retains the source snapshots imported for `0.2.0` and applies the
-repository-local low-rate proxy integrity patch tracked in GitHub issue #27:
+Toolkit version `0.3.0` builds on the source snapshots imported for `0.2.0`, the
+`0.2.1` low-rate proxy integrity patch, and repository-local v0.3 implementations:
 
 | Package | Commit | Subject |
 | --- | --- | --- |

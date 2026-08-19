@@ -1,6 +1,6 @@
 # Docker deployment
 
-Docker mode packages both CLI tools, Google Chrome, FFmpeg, an X virtual display, and a local
+Docker mode packages all three CLI tools, Google Chrome, FFmpeg, an X virtual display, and a local
 noVNC page in one Linux/amd64 container. It is intended for Docker Desktop on Windows or an
 amd64 Linux Docker host.
 

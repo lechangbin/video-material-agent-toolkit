@@ -1,14 +1,15 @@
 [project]
 name = "video-material-collector"
-version = "0.2.1"
+version = "0.3.0"
 description = "Agent-oriented CLI for discovering and downloading short-video source material."
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 requires-python = ">=3.14,<3.15"
 dependencies = [
     "aiosqlite>=0.22,<1",
     "httpcore>=1.0,<2",
-    "httpx>=0.28,<1",
+    "httpx[socks]>=0.28,<1",
     "playwright>=1.61,<2",
     "pydantic>=2.13,<3",
     "sqlalchemy>=2.0,<3",

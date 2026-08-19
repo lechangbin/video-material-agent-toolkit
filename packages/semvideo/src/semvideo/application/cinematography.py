@@ -113,13 +113,12 @@ def call_cinematography_model(
                 result = repaired
     except SemvideoError as error:
         error.with_context(stage="cinematography")
-        if not hasattr(error, "model_attempts"):
+        if not error.model_attempts:
             error.model_attempts = [
                 *attempts,
                 *list(getattr(error, "provider_attempts", [])),
             ]
-        if not hasattr(error, "repair_attempted"):
-            error.repair_attempted = repair_attempted
+        error.repair_attempted = error.repair_attempted or repair_attempted
         raise
     return response, {
         **result.model_dump(mode="json", exclude={"provider_attempts"}),

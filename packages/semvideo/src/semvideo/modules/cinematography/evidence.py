@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from math import ceil, hypot
 from pathlib import Path
 from statistics import fmean, median
+from typing import Any
 
 from semvideo.adapters.ffmpeg import FfmpegAdapter
 
@@ -15,6 +16,7 @@ from .models import (
     ShotEvidenceBundle,
     ShotEvidenceFrame,
     ShotTimeline,
+    TemporalProfile,
 )
 
 
@@ -78,7 +80,7 @@ def plan_shot_evidence(
     return output
 
 
-def _gray_image(path: Path, *, width: int = 64, height: int = 36):
+def _gray_image(path: Path, *, width: int = 64, height: int = 36) -> Any:
     try:
         from PIL import Image
     except ImportError as exc:
@@ -89,7 +91,9 @@ def _gray_image(path: Path, *, width: int = 64, height: int = 36):
         return image.convert("L").resize((width, height))
 
 
-def _normalize_scale(image, scale: float, *, width: int = 64, height: int = 36):
+def _normalize_scale(
+    image: Any, scale: float, *, width: int = 64, height: int = 36
+) -> Any:
     from PIL import Image
 
     scaled = image.resize(
@@ -118,7 +122,9 @@ def _normalize_scale(image, scale: float, *, width: int = 64, height: int = 36):
     return canvas
 
 
-def _difference_score(left, right, *, dx: int = 0, dy: int = 0) -> float:
+def _difference_score(
+    left: Any, right: Any, *, dx: int = 0, dy: int = 0
+) -> float:
     width, height = left.size
     left_pixels = left.load()
     right_pixels = right.load()
@@ -213,7 +219,7 @@ def measure_global_motion(
             and dot_product < 0
         ):
             direction_change_count += 1
-    temporal_profile_hint = "unknown"
+    temporal_profile_hint: TemporalProfile = "unknown"
     if len(speed_curve) >= 2:
         midpoint = max(1, len(speed_curve) // 2)
         early_speed = fmean(speed_curve[:midpoint])

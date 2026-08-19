@@ -6,7 +6,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class _Record(BaseModel):
@@ -17,6 +17,15 @@ class Platform(StrEnum):
     BILIBILI = "bilibili"
     DOUYIN = "douyin"
     XIAOHONGSHU = "xiaohongshu"
+    YOUTUBE = "youtube"
+    TIKTOK = "tiktok"
+
+
+class NetworkRoute(StrEnum):
+    """Non-overridable network capability owned by a platform adapter."""
+
+    DOMESTIC_DIRECT = "domestic_direct"
+    FOREIGN_PROXY = "foreign_proxy"
 
 
 class BrowserChannel(StrEnum):
@@ -29,7 +38,65 @@ PLATFORM_ORDER: tuple[Platform, ...] = (
     Platform.BILIBILI,
     Platform.DOUYIN,
     Platform.XIAOHONGSHU,
+    Platform.YOUTUBE,
+    Platform.TIKTOK,
 )
+
+
+PLATFORM_NETWORK_ROUTES: dict[Platform, NetworkRoute] = {
+    Platform.BILIBILI: NetworkRoute.DOMESTIC_DIRECT,
+    Platform.DOUYIN: NetworkRoute.DOMESTIC_DIRECT,
+    Platform.XIAOHONGSHU: NetworkRoute.DOMESTIC_DIRECT,
+    Platform.YOUTUBE: NetworkRoute.FOREIGN_PROXY,
+    Platform.TIKTOK: NetworkRoute.FOREIGN_PROXY,
+}
+
+
+class GeometryDisposition(StrEnum):
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    UNKNOWN = "unknown"
+
+
+class GeometryStage(StrEnum):
+    PLATFORM_METADATA = "platform_metadata"
+    REMOTE_PROBE = "remote_probe"
+    LOCAL_PROXY = "local_proxy"
+    LOCAL_HIGH_QUALITY = "local_high_quality"
+
+
+class DisplayGeometryAssessment(_Record):
+    """Versioned display-geometry evidence for the 16:9 eligibility gate."""
+
+    schema_version: Literal["media-geometry-assessment/v1"] = (
+        "media-geometry-assessment/v1"
+    )
+    stage: GeometryStage
+    disposition: GeometryDisposition
+    encoded_width: int | None = Field(default=None, ge=1)
+    encoded_height: int | None = Field(default=None, ge=1)
+    rotation_degrees: int | None = None
+    sample_aspect_ratio: str | None = None
+    display_aspect_ratio: str | None = None
+    normalized_display_ratio: float | None = Field(default=None, gt=0)
+    deviation_from_16_9: float | None = Field(default=None, ge=0)
+    reason_code: str | None = None
+
+
+class NetworkRouteEvidence(_Record):
+    """Non-sensitive proof of the effective route selected by capability."""
+
+    schema_version: Literal["network-route-evidence/v1"] = "network-route-evidence/v1"
+    route: NetworkRoute
+    discovery_source: str
+    proxy_kind: Literal["http_connect", "socks5"] | None = None
+    validated_at: str | None = None
+
+
+class AuthorizationDisposition(StrEnum):
+    AUTHORIZED = "authorized"
+    HUMAN_ACTION_REQUIRED = "human_action_required"
+    NOT_AUTHORIZED = "not_authorized"
 
 
 class AuthStatus(StrEnum):
@@ -94,6 +161,25 @@ class CandidateSource(_Record):
     query_id: str
     round_number: int = Field(ge=1)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    network_route: NetworkRoute = NetworkRoute.DOMESTIC_DIRECT
+    route_evidence: NetworkRouteEvidence | None = None
+    yt_dlp_version: str | None = None
+    authorization_disposition: AuthorizationDisposition = (
+        AuthorizationDisposition.AUTHORIZED
+    )
+    geometry_assessment: DisplayGeometryAssessment | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def freeze_platform_route(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        platform = Platform(str(value.get("platform")))
+        expected = PLATFORM_NETWORK_ROUTES[platform]
+        supplied = value.get("network_route")
+        if supplied is not None and NetworkRoute(supplied) is not expected:
+            raise ValueError("network_route cannot override the platform capability")
+        return {**value, "network_route": expected}
 
     @property
     def candidate_id(self) -> str:
@@ -119,6 +205,25 @@ class MediaUnit(_Record):
     duration_seconds: float | None = Field(default=None, ge=0)
     part_index: int | None = Field(default=None, ge=1)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    network_route: NetworkRoute = NetworkRoute.DOMESTIC_DIRECT
+    route_evidence: NetworkRouteEvidence | None = None
+    yt_dlp_version: str | None = None
+    authorization_disposition: AuthorizationDisposition = (
+        AuthorizationDisposition.AUTHORIZED
+    )
+    geometry_assessment: DisplayGeometryAssessment | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def freeze_platform_route(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        platform = Platform(str(value.get("platform")))
+        expected = PLATFORM_NETWORK_ROUTES[platform]
+        supplied = value.get("network_route")
+        if supplied is not None and NetworkRoute(supplied) is not expected:
+            raise ValueError("network_route cannot override the platform capability")
+        return {**value, "network_route": expected}
 
     @property
     def stable_id(self) -> str:
@@ -154,6 +259,7 @@ class FetchResult(_Record):
     duration_seconds: float | None = Field(default=None, ge=0)
     width: int | None = Field(default=None, ge=1)
     height: int | None = Field(default=None, ge=1)
+    geometry_assessment: DisplayGeometryAssessment | None = None
 
 
 class AssetRecord(_Record):
@@ -169,6 +275,7 @@ class AssetRecord(_Record):
     duration_seconds: float | None = Field(default=None, ge=0)
     width: int | None = Field(default=None, ge=1)
     height: int | None = Field(default=None, ge=1)
+    geometry_assessment: DisplayGeometryAssessment | None = None
 
 
 class TitleViewPublication(_Record):

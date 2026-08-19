@@ -3,11 +3,13 @@
 from material_collector.infrastructure.platforms.bilibili import BilibiliAdapter
 from material_collector.infrastructure.platforms.douyin import DouyinAdapter
 from material_collector.infrastructure.platforms.errors import PlatformAdapterError
+from material_collector.infrastructure.platforms.tiktok import TikTokAdapter
 from material_collector.infrastructure.platforms.transport import (
     PlatformTransport,
     PlaywrightPlatformTransport,
 )
 from material_collector.infrastructure.platforms.xiaohongshu import XiaohongshuAdapter
+from material_collector.infrastructure.platforms.youtube import YouTubeAdapter
 
 __all__ = [
     "BilibiliAdapter",
@@ -15,5 +17,7 @@ __all__ = [
     "PlatformAdapterError",
     "PlatformTransport",
     "PlaywrightPlatformTransport",
+    "TikTokAdapter",
     "XiaohongshuAdapter",
+    "YouTubeAdapter",
 ]

@@ -31,7 +31,15 @@ _RUNNING_STATES = frozenset(
     }
 )
 _KNOWN_STATES = _RUNNING_STATES | frozenset(
-    {"created", "completed", "failed", "cancelled", "interrupted"}
+    {
+        "created",
+        "awaiting_subagent",
+        "subagent_ready",
+        "completed",
+        "failed",
+        "cancelled",
+        "interrupted",
+    }
 )
 _TERMINAL_STATES = frozenset({"completed", "failed", "cancelled", "interrupted"})
 _JOB_DIRECTORIES = (

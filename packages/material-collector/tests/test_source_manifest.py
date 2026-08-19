@@ -63,20 +63,26 @@ def create_session(
     write_json(
         plans_path,
         {
-            "schema_version": "2.0",
+            "schema_version": "3.0",
             "platform_scope": list(platform_scope),
             "plans": [
                 {
                     "segment_id": "seg_001",
                     "visual_strategy": "策略",
                     "required_visual_facets": [{"facet_id": "facet_001", "description": "画面"}],
-                    "initial_queries": [
+                    "platform_branches": [
                         {
-                            "query_id": "query_001",
-                            "text": "查询",
-                            "target_platforms": list(platform_scope),
-                            "facet_ids": ["facet_001"],
+                            "platform": platform,
+                            "language": "zh-CN",
+                            "queries": [
+                                {
+                                    "query_id": f"query_001_{platform}",
+                                    "text": "查询",
+                                    "facet_ids": ["facet_001"],
+                                }
+                            ],
                         }
+                        for platform in platform_scope
                     ],
                 }
             ],
@@ -204,7 +210,7 @@ def test_manifest_merges_discoveries_and_strips_temporary_query(
     result_path = (
         workspace / ".material-collector" / "sessions" / session_id / "collection-result.json"
     )
-    assert json.loads(result_path.read_text(encoding="utf-8"))["schema_version"] == "2.0"
+    assert json.loads(result_path.read_text(encoding="utf-8"))["schema_version"] == "3.0"
 
 
 def test_resolved_units_apply_duration_review_boundary(tmp_path: Path) -> None:

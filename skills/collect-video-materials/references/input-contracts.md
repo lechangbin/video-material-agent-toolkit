@@ -7,8 +7,8 @@ Release artifacts:
 
 - [Collection input 1.0 JSON Schema](schemas/collection-input-1.0.schema.json) and
   [minimal example](examples/collection-input-1.0.min.json)
-- [QueryPlans 2.0 JSON Schema](schemas/query-plans-2.0.schema.json) and
-  [minimal example](examples/query-plans-2.0.min.json)
+- [QueryPlans 3.0 JSON Schema](schemas/query-plans-3.0.schema.json) and
+  [minimal example](examples/query-plans-3.0.min.json)
 
 The snapshots are generated from the same Pydantic draft models used by session creation. For a
 read-only machine-readable copy from the installed CLI, run exactly:
@@ -50,11 +50,11 @@ required. `theme`, `content_suggestion`, `segment_id`, and `order` may be omitte
 IDs and order values are generated deterministically. Do not include cookies, API keys, download
 URLs, or temporary signed media URLs.
 
-## QueryPlans 2.0
+## QueryPlans 3.0
 
 ```json
 {
-  "schema_version": "2.0",
+  "schema_version": "3.0",
   "platform_scope": [
     "bilibili"
   ],
@@ -69,15 +69,17 @@ URLs, or temporary signed media URLs.
           "description": "必须覆盖的视觉面向"
         }
       ],
-      "initial_queries": [
+      "platform_branches": [
         {
-          "query_id": "query_001",
-          "text": "具体检索表达",
-          "target_platforms": [
-            "bilibili"
-          ],
-          "facet_ids": [
-            "facet_001"
+          "platform": "bilibili",
+          "language": "zh-CN",
+          "queries": [
+            {
+              "query_id": "query_001_bilibili",
+              "text": "具体检索表达",
+              "facet_ids": ["facet_001"],
+              "budget": 20
+            }
           ]
         }
       ]
@@ -86,11 +88,12 @@ URLs, or temporary signed media URLs.
 }
 ```
 
-- `platform_scope` is a non-empty, duplicate-free subset of `bilibili`, `douyin`, and
-  `xiaohongshu`. Every initial or supplemental query must copy that complete scope into
-  `target_platforms`; a query cannot narrow or expand it.
+- `platform_scope` is a non-empty, duplicate-free subset of `bilibili`, `douyin`,
+  `xiaohongshu`, `youtube`, and `tiktok`. Every plan contains exactly one branch for every
+  in-scope platform. Branches can use different languages and search expressions.
 - Each collection-input segment must have exactly one plan. Every plan needs a non-empty
   `visual_strategy`, at least one `required_visual_facets` entry, and at least one
-  `initial_queries` entry. Every query must reference at least one facet declared by its plan.
+  query in every branch. Every query must reference at least one facet declared by its plan and
+  carries a `budget` from 1 through 100 (default 20).
 - `query_plan_id` may be omitted and is generated from `segment_id`. Runtime budgets such as
   `max_rounds` and `max_videos` do not belong in QueryPlans.

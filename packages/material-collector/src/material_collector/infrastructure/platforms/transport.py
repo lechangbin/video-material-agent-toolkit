@@ -19,7 +19,17 @@ import httpx
 from playwright.async_api import BrowserContext, async_playwright
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
-from material_collector.core.media import BrowserChannel, Platform, PlatformContext
+from material_collector.core.media import (
+    BrowserChannel,
+    NetworkRoute,
+    Platform,
+    PlatformContext,
+)
+from material_collector.infrastructure.networking import (
+    ForeignProxy,
+    browser_proxy,
+    platform_route,
+)
 from material_collector.infrastructure.platforms._shared import (
     validate_temporary_media_url,
 )
@@ -177,12 +187,14 @@ class PlaywrightPlatformTransport:
         resolver: HostResolver | None = None,
         http_transport: httpx.AsyncBaseTransport | None = None,
         network_backend: httpcore.AsyncNetworkBackend | None = None,
+        foreign_proxy: ForeignProxy | None = None,
     ) -> None:
         self._auth_root = auth_root
         self._headless = headless
         self._resolver = resolver or _system_resolver
         self._http_transport = http_transport
         self._network_backend = network_backend or httpcore.AnyIOBackend()
+        self._foreign_proxy = foreign_proxy
         self._search_contexts: dict[_SearchContextKey, _SharedSearchContext] = {}
         self._search_locks: dict[_SearchContextKey, asyncio.Lock] = {}
         self._active_search_keys: set[_SearchContextKey] = set()
@@ -238,13 +250,26 @@ class PlaywrightPlatformTransport:
         )
         profile_path.mkdir(parents=True, exist_ok=True)
         async with async_playwright() as playwright:
-            browser = await playwright.chromium.launch_persistent_context(
-                user_data_dir=profile_path,
-                channel=_PLAYWRIGHT_CHANNEL[context.browser_channel],
-                headless=self._headless and not visible,
-                chromium_sandbox=True,
-                args=list(_DIRECT_CHROMIUM_ARGS),
-            )
+            launch_options: dict[str, Any] = {
+                "user_data_dir": profile_path,
+                "channel": _PLAYWRIGHT_CHANNEL[context.browser_channel],
+                "headless": self._headless and not visible,
+                "chromium_sandbox": True,
+            }
+            if platform_route(platform) is NetworkRoute.FOREIGN_PROXY:
+                if self._foreign_proxy is None:
+                    raise PlatformAdapterError(
+                        "foreign_proxy_required",
+                        "The foreign browser cannot start without a validated proxy.",
+                        platform=platform,
+                        operation="open_browser",
+                        retryable=False,
+                    )
+                launch_options["proxy"] = browser_proxy(self._foreign_proxy)
+                launch_options["args"] = []
+            else:
+                launch_options["args"] = list(_DIRECT_CHROMIUM_ARGS)
+            browser = await playwright.chromium.launch_persistent_context(**launch_options)
             try:
                 yield browser
             finally:

@@ -1,0 +1,104 @@
+{
+  "$defs": {
+    "InitialQueryDraft": {
+      "additionalProperties": false,
+      "properties": {
+        "query_id": {"title": "Query Id", "type": "string"},
+        "text": {"title": "Text", "type": "string"},
+        "facet_ids": {
+          "items": {"type": "string"},
+          "minItems": 1,
+          "title": "Facet Ids",
+          "type": "array"
+        },
+        "budget": {
+          "default": 20,
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Budget",
+          "type": "integer"
+        }
+      },
+      "required": ["query_id", "text", "facet_ids"],
+      "title": "InitialQueryDraft",
+      "type": "object"
+    },
+    "Platform": {
+      "enum": ["bilibili", "douyin", "xiaohongshu", "youtube", "tiktok"],
+      "title": "Platform",
+      "type": "string"
+    },
+    "PlatformQueryBranchDraft": {
+      "additionalProperties": false,
+      "properties": {
+        "platform": {"$ref": "#/$defs/Platform"},
+        "language": {"title": "Language", "type": "string"},
+        "queries": {
+          "items": {"$ref": "#/$defs/InitialQueryDraft"},
+          "minItems": 1,
+          "title": "Queries",
+          "type": "array"
+        }
+      },
+      "required": ["platform", "language", "queries"],
+      "title": "PlatformQueryBranchDraft",
+      "type": "object"
+    },
+    "QueryPlanDraft": {
+      "additionalProperties": false,
+      "properties": {
+        "query_plan_id": {
+          "anyOf": [{"type": "string"}, {"type": "null"}],
+          "default": null,
+          "title": "Query Plan Id"
+        },
+        "segment_id": {"title": "Segment Id", "type": "string"},
+        "visual_strategy": {"title": "Visual Strategy", "type": "string"},
+        "required_visual_facets": {
+          "items": {"$ref": "#/$defs/VisualFacetDraft"},
+          "minItems": 1,
+          "title": "Required Visual Facets",
+          "type": "array"
+        },
+        "platform_branches": {
+          "items": {"$ref": "#/$defs/PlatformQueryBranchDraft"},
+          "minItems": 1,
+          "title": "Platform Branches",
+          "type": "array"
+        }
+      },
+      "required": ["segment_id", "visual_strategy", "required_visual_facets", "platform_branches"],
+      "title": "QueryPlanDraft",
+      "type": "object"
+    },
+    "VisualFacetDraft": {
+      "additionalProperties": false,
+      "properties": {
+        "facet_id": {"title": "Facet Id", "type": "string"},
+        "description": {"title": "Description", "type": "string"}
+      },
+      "required": ["facet_id", "description"],
+      "title": "VisualFacetDraft",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "3.0", "title": "Schema Version", "type": "string"},
+    "platform_scope": {
+      "items": {"$ref": "#/$defs/Platform"},
+      "minItems": 1,
+      "title": "Platform Scope",
+      "type": "array"
+    },
+    "plans": {
+      "items": {"$ref": "#/$defs/QueryPlanDraft"},
+      "minItems": 1,
+      "title": "Plans",
+      "type": "array"
+    }
+  },
+  "required": ["schema_version", "platform_scope", "plans"],
+  "title": "QueryPlansDraft",
+  "type": "object"
+}

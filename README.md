@@ -5,13 +5,14 @@
 
 面向本地 AI Agent 的视频素材工作流工具集，包含：
 
-- `material-collector`：从 Bilibili、抖音和小红书搜索视频来源，下载最高不超过
+- `material-collector`：从 Bilibili、抖音、小红书、YouTube 和 TikTok 搜索视频来源，下载最高不超过
   720p 的理解代理，持久化可恢复会话，并保留来源清单；
 - `semvideo`：对本地视频进行语义理解、分段、镜头语言标注、查询和片段导出；
+- `media-conformance`：把选中的高质量源时间范围转换为可直接拼接的统一 1080p30 H.264/AAC 剪辑；
 - 四个遵循开放 [Agent Skills 规范](https://agentskills.io/) 的 Skills，用于把搜索、
   理解、Top-K 选择和有界补搜编排为可追踪工作流。
 
-当前工具包发布为 `v0.2.1`：Material Collector `0.2.1`，Semvideo `0.1.4`。
+当前开发目标为 `v0.3.0`：Material Collector `0.3.0`、Semvideo `0.2.0`、Media Conformance `0.3.0`。
 支持 Windows x64 和 CPython `>=3.14.6,<3.15`。
 Docker 部署另支持 Linux/amd64 容器，并通过本机 noVNC 页面完成交互式平台登录。
 
@@ -39,7 +40,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap-agent.ps1
 ```
 
 该入口会检测并安装缺失的 Python 3.14、uv、Node.js、Edge/Chrome 浏览器通道和 FFmpeg，从最新 GitHub
-Release 下载并校验两个 wheel，然后通过 `npx skills` 给受支持的 Agent 安装全部四个
+Release 下载并校验三个 wheel，然后通过 `npx skills` 给受支持的 Agent 安装全部四个
 Skills。它不会写入 API Key，也不会代替用户完成平台扫码登录。
 
 只检查、不修改机器：
@@ -68,7 +69,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap-agent.ps1 `
 docker compose up -d --build
 ```
 
-该命令构建并启动包含 `material-collector`、`semvideo`、Google Chrome、FFmpeg 和
+该命令构建并启动包含 `material-collector`、`semvideo`、`media-conformance`、Google Chrome、FFmpeg 和
 noVNC 桌面的 Linux/amd64 容器。默认把运行数据持久化到 Git 忽略的
 `./docker-data`，并只在本机回环地址开放登录页面：
 
@@ -100,6 +101,7 @@ sandbox 开启。
 packages/
   material-collector/  # 搜索下载 CLI 源码
   semvideo/            # 视频理解 CLI 源码
+  media-conformance/   # 剪辑介质标准化 CLI 源码
 skills/
   collect-video-materials/
   semvideo/
@@ -115,7 +117,7 @@ Dockerfile
 compose.yaml
 ```
 
-两个源码快照对应的原始 Git 提交见 [SOURCE_COMMITS.md](SOURCE_COMMITS.md)。
+源码快照和本地演进关系见 [SOURCE_COMMITS.md](SOURCE_COMMITS.md)。
 
 ## 快速安装
 
@@ -149,21 +151,22 @@ ffprobe -version
 FFmpeg 是独立的第三方程序，本仓库和 wheel 均不捆绑 FFmpeg 二进制。若使用自定义
 FFmpeg 构建，请自行核对该构建的许可证和编码器配置。
 
-### 2. 下载并安装两个 CLI
+### 2. 下载并安装三个 CLI
 
 从 [GitHub Releases](https://github.com/lechangbin/video-material-agent-toolkit/releases)
 下载：
 
 ```text
-video_material_collector-0.2.1-py3-none-any.whl
-semvideo-0.1.4-py3-none-any.whl
+video_material_collector-0.3.0-py3-none-any.whl
+semvideo-0.2.0-py3-none-any.whl
+media_conformance-0.3.0-py3-none-any.whl
 SHA256SUMS.txt
 ```
 
 也可以使用 GitHub CLI：
 
 ```powershell
-gh release download v0.2.1 `
+gh release download v0.3.0 `
   --repo lechangbin/video-material-agent-toolkit `
   --dir .\video-toolkit-release
 ```
@@ -172,13 +175,16 @@ gh release download v0.2.1 `
 
 ```powershell
 uv tool install --python 3.14 `
-  .\video-toolkit-release\video_material_collector-0.2.1-py3-none-any.whl
+  .\video-toolkit-release\video_material_collector-0.3.0-py3-none-any.whl
 
 python -m pip install --user `
-  .\video-toolkit-release\semvideo-0.1.4-py3-none-any.whl
+  .\video-toolkit-release\semvideo-0.2.0-py3-none-any.whl
+
+uv tool install --python 3.14 `
+  .\video-toolkit-release\media_conformance-0.3.0-py3-none-any.whl
 ```
 
-或者运行随 Release 下载的安装脚本；脚本会先验证两个 wheel 的 SHA-256：
+或者运行随 Release 下载的安装脚本；脚本会先验证三个 wheel 的 SHA-256：
 
 ```powershell
 .\video-toolkit-release\install-tools.ps1 `
@@ -191,6 +197,7 @@ python -m pip install --user `
 ```powershell
 material-collector --help
 semvideo --version --json
+media-conformance --help
 ```
 
 `material-collector` 通过 `uv tool` 使用独立环境，避免与 Semvideo 的 Python 依赖
@@ -282,7 +289,7 @@ semvideo doctor --workspace C:\video-workspace --json
 search-understand-refine-video-materials
 ```
 
-它会加载另外三个组件 Skill，并通过版本化文件连接两个 CLI。
+它会加载另外三个组件 Skill，并通过版本化文件连接三个 CLI。
 
 ## 从源码开发和构建
 
@@ -305,7 +312,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-构建两个 wheel：
+构建三个 wheel：
 
 ```powershell
 .\scripts\build-release.ps1

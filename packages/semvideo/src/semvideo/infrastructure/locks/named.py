@@ -5,9 +5,10 @@ from __future__ import annotations
 import os
 import random
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import BinaryIO, Iterator
+from typing import BinaryIO
 
 from .common import LockAcquisitionTimeout, try_open_lock_file
 
@@ -23,7 +24,10 @@ def _try_lock(stream: BinaryIO) -> bool:
         if os.name == "nt":
             msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
         else:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(  # type: ignore[attr-defined]
+                stream.fileno(),
+                fcntl.LOCK_EX | fcntl.LOCK_NB,  # type: ignore[attr-defined]
+            )
     except OSError:
         return False
     return True
@@ -34,7 +38,9 @@ def _unlock(stream: BinaryIO) -> None:
     if os.name == "nt":
         msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
     else:
-        fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+        fcntl.flock(  # type: ignore[attr-defined]
+            stream.fileno(), fcntl.LOCK_UN  # type: ignore[attr-defined]
+        )
 
 
 @contextmanager

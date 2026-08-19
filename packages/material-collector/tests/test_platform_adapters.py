@@ -124,8 +124,8 @@ def inspect_720p(path: Path) -> MediaProbe:
         path=path,
         duration_seconds=12.5,
         container="mov,mp4,m4a,3gp,3g2,mj2",
-        width=720,
-        height=1280,
+        width=1280,
+        height=720,
         video_stream_count=1,
         audio_stream_count=1,
     )
@@ -286,7 +286,7 @@ async def test_bilibili_fetch_uses_fresh_playback_url_without_persisting_it(
 
     assert result.sha256 == hashlib.sha256(b"bilibili proxy").hexdigest()
     assert result.media_unit_id == source.media_units[0].stable_id
-    assert (result.width, result.height, result.duration_seconds) == (720, 1280, 12.5)
+    assert (result.width, result.height, result.duration_seconds) == (1280, 720, 12.5)
     assert transport.download_urls == [
         "https://upos-sz-mirrorcos.bilivideo.com/proxy.mp4?deadline=temporary"
     ]
@@ -339,8 +339,8 @@ async def test_low_proxy_rejects_download_that_ffprobe_finds_above_720p(
             path=path,
             duration_seconds=10,
             container="mp4",
-            width=1080,
-            height=1920,
+            width=1920,
+            height=1080,
             video_stream_count=1,
             audio_stream_count=1,
         )
@@ -1575,5 +1575,9 @@ def test_adapters_match_the_frozen_protocol_shapes() -> None:
         XiaohongshuAdapter(transport),
     )
 
-    assert [provider.platform for provider in search_providers] == list(Platform)
+    assert [provider.platform for provider in search_providers] == [
+        Platform.BILIBILI,
+        Platform.DOUYIN,
+        Platform.XIAOHONGSHU,
+    ]
     assert len(source_resolvers) == len(media_fetchers) == 3

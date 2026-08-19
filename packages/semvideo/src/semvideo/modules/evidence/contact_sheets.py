@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
 
 from .models import ContactSheet, EvidenceFrame
 
@@ -63,13 +63,13 @@ def create_contact_sheets(
             x = column * policy.cell_width
             y = row * (policy.cell_height + policy.label_height)
             with Image.open(evidence_dir / frame.relative_path) as image:
-                image = ImageOps.contain(
+                contained = ImageOps.contain(
                     image.convert("RGB"),
                     (policy.cell_width, policy.cell_height),
                 )
-                paste_x = x + (policy.cell_width - image.width) // 2
-                paste_y = y + (policy.cell_height - image.height) // 2
-                canvas.paste(image, (paste_x, paste_y))
+                paste_x = x + (policy.cell_width - contained.width) // 2
+                paste_y = y + (policy.cell_height - contained.height) // 2
+                canvas.paste(contained, (paste_x, paste_y))
             draw.text(
                 (x + 6, y + policy.cell_height + 6),
                 f"{cell_index + 1}. {_format_timestamp(frame.timestamp_ms)}",

@@ -18,7 +18,9 @@ from material_collector.application.workflow import CollectionWorkflow
 from material_collector.core.errors import CollectorError
 from material_collector.core.fingerprints import FingerprintMatch
 from material_collector.core.media import (
-    PLATFORM_ORDER,
+    PLATFORM_ORDER as FULL_PLATFORM_ORDER,
+)
+from material_collector.core.media import (
     AuthenticationSelection,
     AuthProbe,
     AuthStatus,
@@ -46,6 +48,11 @@ from material_collector.infrastructure.source_manifest_store import (
     SqliteSourceManifestStore,
 )
 
+TEST_PLATFORMS = FULL_PLATFORM_ORDER[:3]
+# Existing workflow cases intentionally exercise the original domestic scope. Foreign
+# capability cases use FULL_PLATFORM_ORDER explicitly so unused adapters cannot hide calls.
+PLATFORM_ORDER = TEST_PLATFORMS
+
 
 def _write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -56,7 +63,7 @@ def _create_session(
     tmp_path: Path,
     *,
     max_videos: int = 6,
-    platform_scope: tuple[Platform, ...] = PLATFORM_ORDER,
+    platform_scope: tuple[Platform, ...] = TEST_PLATFORMS,
     add_second_query: bool = False,
     request_timeout_seconds: int = 30,
     browser_channel: BrowserChannel = BrowserChannel.AUTO,
@@ -64,23 +71,22 @@ def _create_session(
     input_path = tmp_path / "input.json"
     plans_path = tmp_path / "plans.json"
     target_platforms = [platform.value for platform in platform_scope]
-    queries = [
-        {
-            "query_id": "query_city",
+    branches: list[dict[str, Any]] = []
+    for platform in target_platforms:
+        queries = [{
+            "query_id": f"query_city_{platform}",
             "text": "城市更新 旧工业区",
-            "target_platforms": target_platforms,
             "facet_ids": ["facet_change"],
-        }
-    ]
-    if add_second_query:
-        queries.append(
-            {
-                "query_id": "query_city_second",
+            "budget": 20,
+        }]
+        if add_second_query:
+            queries.append({
+                "query_id": f"query_city_second_{platform}",
                 "text": "城市更新 公共空间",
-                "target_platforms": target_platforms,
                 "facet_ids": ["facet_change"],
-            }
-        )
+                "budget": 20,
+            })
+        branches.append({"platform": platform, "language": "zh-CN", "queries": queries})
     _write_json(
         input_path,
         {
@@ -99,7 +105,7 @@ def _create_session(
     _write_json(
         plans_path,
         {
-            "schema_version": "2.0",
+            "schema_version": "3.0",
             "platform_scope": target_platforms,
             "plans": [
                 {
@@ -111,7 +117,7 @@ def _create_session(
                             "description": "旧工业区和公共空间",
                         }
                     ],
-                    "initial_queries": queries,
+                    "platform_branches": branches,
                 }
             ],
         },
@@ -237,6 +243,8 @@ class _Platform:
             Platform.BILIBILI: "www.bilibili.com",
             Platform.DOUYIN: "www.douyin.com",
             Platform.XIAOHONGSHU: "www.xiaohongshu.com",
+            Platform.YOUTUBE: "www.youtube.com",
+            Platform.TIKTOK: "www.tiktok.com",
         }[self.platform]
         candidate = CandidateSource(
             platform=self.platform,

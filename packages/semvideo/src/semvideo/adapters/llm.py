@@ -191,11 +191,7 @@ class OpenAICompatibleLlm:
                         },
                         exit_code=5,
                     )
-                    setattr(
-                        context_error,
-                        "provider_attempts",
-                        provider_attempts,
-                    )
+                    context_error.provider_attempts = provider_attempts
                     raise context_error
                 response_headers = self._response_headers(response)
                 return ModelCallResult(
@@ -210,8 +206,8 @@ class OpenAICompatibleLlm:
                     raw_response=body,
                     provider_attempts=provider_attempts,
                 )
-            except SemvideoError as error:
-                error.provider_attempts = provider_attempts
+            except SemvideoError as provider_error:
+                provider_error.provider_attempts = provider_attempts
                 raise
             except (httpx.TimeoutException, httpx.NetworkError) as exc:
                 last_error = exc
@@ -228,7 +224,7 @@ class OpenAICompatibleLlm:
                 delay = min(60.0, 2**attempt) + random.uniform(0.0, 0.75)
                 self._sleep(delay)
             except (KeyError, IndexError, TypeError, ValueError) as exc:
-                error = SemvideoError(
+                shape_error = SemvideoError(
                     code="provider_response_shape_invalid",
                     category=ErrorCategory.MODEL_RESPONSE_INVALID,
                     message="模型提供商返回了无法识别的响应结构。",
@@ -238,9 +234,9 @@ class OpenAICompatibleLlm:
                     details={"reason": str(exc)},
                     exit_code=5,
                 )
-                error.provider_attempts = provider_attempts
-                raise error from exc
-        error = SemvideoError(
+                shape_error.provider_attempts = provider_attempts
+                raise shape_error from exc
+        network_error = SemvideoError(
             code="provider_network_failed",
             category=ErrorCategory.PROVIDER_TRANSIENT,
             message="模型请求在有界重试后仍然失败。",
@@ -250,8 +246,8 @@ class OpenAICompatibleLlm:
             details={"reason": str(last_error) if last_error else "unknown"},
             exit_code=5,
         )
-        error.provider_attempts = provider_attempts
-        raise error
+        network_error.provider_attempts = provider_attempts
+        raise network_error
 
     def _http_attempt_record(
         self,
@@ -304,10 +300,10 @@ class OpenAICompatibleLlm:
         retry_after = response.headers.get("retry-after")
         if retry_after:
             try:
-                return max(0.0, min(300.0, float(retry_after)))
+                return float(max(0.0, min(300.0, float(retry_after))))
             except ValueError:
                 pass
-        return min(60.0, 2**attempt) + random.uniform(0.0, 0.75)
+        return float(min(60.0, 2**attempt) + random.uniform(0.0, 0.75))
 
     def _wait_for_shared_cooldown(self) -> None:
         while self._cooldown_path is not None and self._cooldown_path.is_file():

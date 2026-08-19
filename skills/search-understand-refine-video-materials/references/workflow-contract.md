@@ -203,7 +203,7 @@ The parent Agent writes:
   "query_plan_id": "qp_seg_001",
   "round_number": 1,
   "status": "insufficient",
-  "previous_query_texts": ["initial query text"],
+  "previous_query_texts": ["bilibili:initial query text"],
   "evidence": {
     "selection_id": "sel_...",
     "selection_result_path": "selection/selection-result.json",
@@ -228,8 +228,10 @@ The parent Agent writes:
     {
       "query_id": "q_seg_001_round_002_01",
       "text": "targeted search expression",
-      "target_platforms": ["bilibili"],
-      "facet_ids": ["facet_..."]
+      "platform": "bilibili",
+      "language": "zh-CN",
+      "facet_ids": ["facet_..."],
+      "budget": 20
     }
   ]
 }
@@ -238,7 +240,7 @@ The parent Agent writes:
 For `status: "sufficient"`, `gaps` and `next_queries` must be empty. For
 `status: "insufficient"`, both must be non-empty, query text must not duplicate a
 previous round. `previous_query_texts` must contain the normalized cumulative query
-history through the current round and must match every prior `query-plans.json`
+history through the current round as normalized `platform:text` entries and must match every prior `query-plans.json`
 passed to `plan_round.py`. Pass exactly one distinct QueryPlan artifact for every
 prior round; missing or repeated artifacts are rejected. Every facet ID must belong
 to the frozen QueryPlan, and every supplemental expression must target the complete

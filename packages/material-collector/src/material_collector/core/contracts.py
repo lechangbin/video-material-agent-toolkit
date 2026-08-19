@@ -13,7 +13,7 @@ from material_collector.core.errors import ContractError, ContractVersionError
 from material_collector.core.media import PLATFORM_ORDER, Platform
 
 CollectionSchemaVersion = Literal["1.0"]
-QueryPlansSchemaVersion = Literal["2.0"]
+QueryPlansSchemaVersion = Literal["3.0"]
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 
@@ -131,8 +131,8 @@ class VisualFacetDraft(_ContractModel):
 class InitialQueryDraft(_ContractModel):
     query_id: str
     text: str
-    target_platforms: tuple[Platform, ...] = Field(min_length=1)
     facet_ids: tuple[str, ...] = Field(min_length=1)
+    budget: int = Field(default=20, ge=1, le=100)
 
     @field_validator("query_id")
     @classmethod
@@ -153,12 +153,26 @@ class InitialQueryDraft(_ContractModel):
         return tuple(_validate_safe_id(item, "facet_id") for item in value)
 
 
+class PlatformQueryBranchDraft(_ContractModel):
+    platform: Platform
+    language: str
+    queries: tuple[InitialQueryDraft, ...] = Field(min_length=1)
+
+    @field_validator("language")
+    @classmethod
+    def normalize_language(cls, value: str) -> str:
+        normalized = normalize_inline_text(value)
+        if not normalized:
+            raise ValueError("platform branch language must not be empty")
+        return normalized
+
+
 class QueryPlanDraft(_ContractModel):
     query_plan_id: str | None = None
     segment_id: str
     visual_strategy: str
     required_visual_facets: tuple[VisualFacetDraft, ...] = Field(min_length=1)
-    initial_queries: tuple[InitialQueryDraft, ...] = Field(min_length=1)
+    platform_branches: tuple[PlatformQueryBranchDraft, ...] = Field(min_length=1)
 
     @field_validator("query_plan_id")
     @classmethod
@@ -202,8 +216,21 @@ class VisualFacet(_ContractModel):
 class InitialQuery(_ContractModel):
     query_id: str
     text: str
-    target_platforms: tuple[Platform, ...]
+    platform: Platform
     facet_ids: tuple[str, ...]
+    budget: int
+
+    @property
+    def target_platforms(self) -> tuple[Platform, ...]:
+        """Return the single branch platform for the execution layer."""
+
+        return (self.platform,)
+
+
+class PlatformQueryBranch(_ContractModel):
+    platform: Platform
+    language: str
+    queries: tuple[InitialQuery, ...]
 
 
 class QueryPlan(_ContractModel):
@@ -211,11 +238,17 @@ class QueryPlan(_ContractModel):
     segment_id: str
     visual_strategy: str
     required_visual_facets: tuple[VisualFacet, ...]
-    initial_queries: tuple[InitialQuery, ...]
+    platform_branches: tuple[PlatformQueryBranch, ...]
+
+    @property
+    def initial_queries(self) -> tuple[InitialQuery, ...]:
+        """Flatten version-three platform branches for deterministic execution."""
+
+        return tuple(query for branch in self.platform_branches for query in branch.queries)
 
 
 class QueryPlans(_ContractModel):
-    schema_version: QueryPlansSchemaVersion = "2.0"
+    schema_version: QueryPlansSchemaVersion = "3.0"
     platform_scope: tuple[Platform, ...]
     plans: tuple[QueryPlan, ...]
 
@@ -318,14 +351,14 @@ def normalize_query_plans(data: Any, collection_input: CollectionInput) -> Query
     if (
         isinstance(data, dict)
         and "schema_version" in data
-        and data["schema_version"] != "2.0"
+        and data["schema_version"] != "3.0"
     ):
-        raise ContractVersionError("query_plans", data["schema_version"], "2.0")
+        raise ContractVersionError("query_plans", data["schema_version"], "3.0")
 
     try:
         draft = QueryPlansDraft.model_validate(data)
     except ValidationError as error:
-        raise _pydantic_error("query_plans", "2.0", error) from error
+        raise _pydantic_error("query_plans", "3.0", error) from error
 
     if len(set(draft.platform_scope)) != len(draft.platform_scope):
         raise ContractError(
@@ -388,74 +421,91 @@ def normalize_query_plans(data: Any, collection_input: CollectionInput) -> Query
                 VisualFacet(facet_id=facet.facet_id, description=facet.description)
             )
 
-        queries: list[InitialQuery] = []
-        query_ids: set[str] = set()
-        query_texts: set[str] = set()
-        for query in plan.initial_queries:
-            if query.query_id in query_ids:
+        branches_by_platform: dict[Platform, PlatformQueryBranchDraft] = {}
+        for branch in plan.platform_branches:
+            if branch.platform in branches_by_platform:
                 raise ContractError(
-                    "Initial query identifiers must be unique within a QueryPlan.",
+                    "A QueryPlan cannot contain duplicate platform branches.",
                     details={
                         "query_plan_id": query_plan_id,
-                        "query_id": query.query_id,
+                        "platform": branch.platform,
                     },
                 )
-            query_text_key = query.text.casefold()
-            if query_text_key in query_texts:
-                raise ContractError(
-                    "Initial query text must be unique after normalization.",
-                    details={"query_plan_id": query_plan_id, "text": query.text},
-                )
-            if len(set(query.target_platforms)) != len(query.target_platforms):
-                raise ContractError(
-                    "Target platform lists must not contain duplicates.",
-                    details={
-                        "query_plan_id": query_plan_id,
-                        "query_id": query.query_id,
-                    },
-                )
-            if len(set(query.facet_ids)) != len(query.facet_ids):
-                raise ContractError(
-                    "Initial query facet references must not contain duplicates.",
-                    details={
-                        "query_plan_id": query_plan_id,
-                        "query_id": query.query_id,
-                    },
-                )
-            unknown_facets = sorted(set(query.facet_ids) - facet_ids)
-            if unknown_facets:
-                raise ContractError(
-                    "An initial query references an unknown visual facet.",
-                    details={
-                        "query_plan_id": query_plan_id,
-                        "query_id": query.query_id,
-                        "unknown_facet_ids": unknown_facets,
-                    },
-                )
-
-            target_platforms = tuple(
-                platform for platform in PLATFORM_ORDER if platform in query.target_platforms
+            branches_by_platform[branch.platform] = branch
+        branch_platforms = tuple(
+            platform for platform in PLATFORM_ORDER if platform in branches_by_platform
+        )
+        if branch_platforms != platform_scope or len(branches_by_platform) != len(
+            platform_scope
+        ):
+            raise ContractError(
+                "Every QueryPlan must contain exactly one branch for every in-scope platform.",
+                details={
+                    "query_plan_id": query_plan_id,
+                    "platform_scope": platform_scope,
+                    "branch_platforms": branch_platforms,
+                },
             )
-            if target_platforms != platform_scope or len(query.target_platforms) != len(
-                platform_scope
-            ):
-                raise ContractError(
-                    "Every query expression must target the complete collection platform scope.",
-                    details={
-                        "query_plan_id": query_plan_id,
-                        "query_id": query.query_id,
-                        "platform_scope": platform_scope,
-                        "target_platforms": target_platforms,
-                    },
+
+        branches: list[PlatformQueryBranch] = []
+        query_ids: set[str] = set()
+        for platform in platform_scope:
+            draft_branch = branches_by_platform[platform]
+            query_texts: set[str] = set()
+            queries: list[InitialQuery] = []
+            for query in draft_branch.queries:
+                if query.query_id in query_ids:
+                    raise ContractError(
+                        "Initial query identifiers must be unique within a QueryPlan.",
+                        details={
+                            "query_plan_id": query_plan_id,
+                            "query_id": query.query_id,
+                        },
+                    )
+                query_text_key = query.text.casefold()
+                if query_text_key in query_texts:
+                    raise ContractError(
+                        "Initial query text must be unique within a platform branch.",
+                        details={
+                            "query_plan_id": query_plan_id,
+                            "platform": platform,
+                            "text": query.text,
+                        },
+                    )
+                if len(set(query.facet_ids)) != len(query.facet_ids):
+                    raise ContractError(
+                        "Initial query facet references must not contain duplicates.",
+                        details={
+                            "query_plan_id": query_plan_id,
+                            "query_id": query.query_id,
+                        },
+                    )
+                unknown_facets = sorted(set(query.facet_ids) - facet_ids)
+                if unknown_facets:
+                    raise ContractError(
+                        "An initial query references an unknown visual facet.",
+                        details={
+                            "query_plan_id": query_plan_id,
+                            "query_id": query.query_id,
+                            "unknown_facet_ids": unknown_facets,
+                        },
+                    )
+                query_ids.add(query.query_id)
+                query_texts.add(query_text_key)
+                queries.append(
+                    InitialQuery(
+                        query_id=query.query_id,
+                        text=query.text,
+                        platform=platform,
+                        facet_ids=query.facet_ids,
+                        budget=query.budget,
+                    )
                 )
-            query_ids.add(query.query_id)
-            query_texts.add(query_text_key)
-            queries.append(
-                InitialQuery(
-                    query_id=query.query_id,
-                    text=query.text,
-                    target_platforms=target_platforms,
-                    facet_ids=query.facet_ids,
+            branches.append(
+                PlatformQueryBranch(
+                    platform=platform,
+                    language=draft_branch.language,
+                    queries=tuple(queries),
                 )
             )
 
@@ -464,7 +514,7 @@ def normalize_query_plans(data: Any, collection_input: CollectionInput) -> Query
             segment_id=plan.segment_id,
             visual_strategy=plan.visual_strategy,
             required_visual_facets=tuple(facets),
-            initial_queries=tuple(queries),
+            platform_branches=tuple(branches),
         )
 
     missing_segments = [

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol, cast
 
 from semvideo.modules.media.subtitles import TranscriptSpan
 
@@ -38,12 +39,12 @@ ModelFactory = Callable[[FasterWhisperConfig], WhisperModelLike]
 
 def _default_model_factory(config: FasterWhisperConfig) -> WhisperModelLike:
     try:
-        from faster_whisper import WhisperModel
+        from faster_whisper import WhisperModel  # type: ignore[import-untyped]
     except ImportError as exc:
         raise RuntimeError(
             "faster-whisper is required when ASR fallback is enabled"
         ) from exc
-    return WhisperModel(
+    return cast(WhisperModelLike, WhisperModel(
         config.model_name_or_path,
         device=config.device,
         compute_type=config.compute_type,
@@ -51,7 +52,7 @@ def _default_model_factory(config: FasterWhisperConfig) -> WhisperModelLike:
         num_workers=config.num_workers,
         download_root=str(config.download_root) if config.download_root else None,
         local_files_only=config.local_files_only,
-    )
+    ))
 
 
 class FasterWhisperTranscriber:
@@ -83,8 +84,8 @@ class FasterWhisperTranscriber:
             spans.append(
                 TranscriptSpan(
                     transcript_span_id=f"transcript_{len(spans) + 1:04d}",
-                    start_ms=round(float(getattr(item, "start")) * 1000),
-                    end_ms=round(float(getattr(item, "end")) * 1000),
+                    start_ms=round(float(item.start) * 1000),
+                    end_ms=round(float(item.end) * 1000),
                     text=text,
                     source="asr",
                     # faster-whisper exposes average log probability, not a

@@ -53,9 +53,10 @@ def collection_document() -> dict[str, Any]:
 
 
 def query_plan_document() -> dict[str, Any]:
+    platforms = ["bilibili", "douyin", "xiaohongshu"]
     return {
-        "schema_version": "2.0",
-        "platform_scope": ["bilibili", "douyin", "xiaohongshu"],
+        "schema_version": "3.0",
+        "platform_scope": platforms,
         "plans": [
             {
                 "segment_id": "seg_001",
@@ -63,17 +64,18 @@ def query_plan_document() -> dict[str, Any]:
                 "required_visual_facets": [
                     {"facet_id": "facet_001", "description": "主题主体"}
                 ],
-                "initial_queries": [
+                "platform_branches": [
                     {
-                        "query_id": "query_001",
-                        "text": "主题 视频",
-                        "target_platforms": [
-                            "bilibili",
-                            "douyin",
-                            "xiaohongshu",
-                        ],
-                        "facet_ids": ["facet_001"],
+                        "platform": platform,
+                        "language": "zh-CN",
+                        "queries": [{
+                            "query_id": f"query_001_{platform}",
+                            "text": "主题 视频",
+                            "facet_ids": ["facet_001"],
+                            "budget": 20,
+                        }],
                     }
+                    for platform in platforms
                 ],
             }
         ],
@@ -84,11 +86,22 @@ def scoped_query_plan_document(
     *platform_scope: str,
 ) -> dict[str, Any]:
     plans = query_plan_document()
-    plans["schema_version"] = "2.0"
+    plans["schema_version"] = "3.0"
     plans["platform_scope"] = list(platform_scope)
     for plan in plans["plans"]:
-        for query in plan["initial_queries"]:
-            query["target_platforms"] = list(platform_scope)
+        plan["platform_branches"] = [
+            {
+                "platform": platform,
+                "language": "zh-CN",
+                "queries": [{
+                    "query_id": f"query_001_{platform}",
+                    "text": "主题 视频",
+                    "facet_ids": ["facet_001"],
+                    "budget": 20,
+                }],
+            }
+            for platform in platform_scope
+        ]
     return plans
 
 
@@ -342,6 +355,17 @@ def test_resume_forwards_execution_scoped_visible_search_flag(
 ) -> None:
     workspace = tmp_path / "workspace"
     seen: list[bool] = []
+    input_path = tmp_path / "input.json"
+    plans_path = tmp_path / "plans.json"
+    write_json(input_path, collection_document())
+    write_json(plans_path, scoped_query_plan_document("bilibili"))
+    session = SessionApplication(store=SqliteSessionStore()).create_session(
+        CreateSessionRequest(
+            workspace=workspace,
+            input_path=input_path,
+            query_plans_path=plans_path,
+        )
+    )
 
     class FakeWorkflow:
         async def run(
@@ -365,7 +389,7 @@ def test_resume_forwards_execution_scoped_visible_search_flag(
                 action_required=None,
             )
 
-    monkeypatch.setattr(cli_module, "_workflow", lambda *, progress: FakeWorkflow())
+    monkeypatch.setattr(cli_module, "_workflow", lambda **_kwargs: FakeWorkflow())
     result = CliRunner().invoke(
         app,
         [
@@ -373,7 +397,7 @@ def test_resume_forwards_execution_scoped_visible_search_flag(
             "--workspace",
             str(workspace),
             "--session-id",
-            "ses_visible_resume",
+            session.session_id,
             "--show-search-browsers",
         ],
     )
@@ -386,6 +410,18 @@ def test_resume_reports_search_browser_closed_at_public_cli_boundary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    workspace = tmp_path / "workspace"
+    input_path = tmp_path / "input.json"
+    plans_path = tmp_path / "plans.json"
+    write_json(input_path, collection_document())
+    write_json(plans_path, scoped_query_plan_document("bilibili"))
+    session = SessionApplication(store=SqliteSessionStore()).create_session(
+        CreateSessionRequest(
+            workspace=workspace,
+            input_path=input_path,
+            query_plans_path=plans_path,
+        )
+    )
     class FakeWorkflow:
         async def run(
             self,
@@ -406,15 +442,15 @@ def test_resume_reports_search_browser_closed_at_public_cli_boundary(
                 },
             )
 
-    monkeypatch.setattr(cli_module, "_workflow", lambda *, progress: FakeWorkflow())
+    monkeypatch.setattr(cli_module, "_workflow", lambda **_kwargs: FakeWorkflow())
     result = CliRunner().invoke(
         app,
         [
             "resume",
             "--workspace",
-            str(tmp_path / "workspace"),
+            str(workspace),
             "--session-id",
-            "ses_closed_window",
+            session.session_id,
             "--show-search-browsers",
         ],
     )
@@ -470,7 +506,7 @@ def test_contracts_schema_exposes_authoritative_read_only_contracts() -> None:
     ] == "1.0"
     assert payload["contracts"]["query_plans"]["properties"]["schema_version"][
         "const"
-    ] == "2.0"
+        ] == "3.0"
 
 
 def test_version_exposes_cli_and_agent_protocol_compatibility() -> None:
@@ -480,10 +516,10 @@ def test_version_exposes_cli_and_agent_protocol_compatibility() -> None:
     payload = parse_single_json_line(result.stdout)
     assert payload == {
         "schema_version": "material-collector-version/v1",
-        "cli_version": "0.2.1",
+        "cli_version": "0.3.0",
         "skill_protocol_version": 1,
         "collection_input_schema": {"min": "1.0", "max": "1.0"},
-        "query_plans_schema": {"min": "2.0", "max": "2.0"},
+        "query_plans_schema": {"min": "3.0", "max": "3.0"},
     }
 
 
@@ -511,11 +547,11 @@ def test_contracts_normalize_freezes_a_bilibili_only_platform_scope(
 
     assert result.exit_code == 0, result.stdout
     payload = parse_single_json_line(result.stdout)
-    assert payload["query_plans"]["schema_version"] == "2.0"
+    assert payload["query_plans"]["schema_version"] == "3.0"
     assert payload["query_plans"]["platform_scope"] == ["bilibili"]
-    assert payload["query_plans"]["plans"][0]["initial_queries"][0][
-        "target_platforms"
-    ] == ["bilibili"]
+    assert payload["query_plans"]["plans"][0]["platform_branches"][0][
+        "platform"
+    ] == "bilibili"
 
 
 def test_contracts_normalize_canonicalizes_a_supported_platform_subset(
@@ -548,8 +584,9 @@ def test_contracts_normalize_canonicalizes_a_supported_platform_subset(
         "bilibili",
         "xiaohongshu",
     ]
-    assert payload["query_plans"]["plans"][0]["initial_queries"][0][
-        "target_platforms"
+    assert [
+        branch["platform"]
+        for branch in payload["query_plans"]["plans"][0]["platform_branches"]
     ] == ["bilibili", "xiaohongshu"]
 
 
@@ -717,7 +754,7 @@ def test_contracts_normalize_rejects_queryplans_v1_as_unsupported(
         "details": {
             "document": "query_plans",
             "received_version": "1.0",
-            "supported_versions": ["2.0"],
+            "supported_versions": ["3.0"],
         },
     }
 
@@ -785,7 +822,7 @@ def test_run_can_render_human_readable_progress_without_polluting_stdout(
                 action_required=None,
             )
 
-    def fake_workflow(*, progress: Any) -> FakeWorkflow:
+    def fake_workflow(*, progress: Any, **_kwargs: Any) -> FakeWorkflow:
         return FakeWorkflow(progress)
 
     monkeypatch.setattr(cli_module, "_workflow", fake_workflow)
@@ -822,7 +859,7 @@ def test_run_status_and_sessions_list_share_the_application_module(
     write_json(plans_path, query_plan_document())
 
     class FakeWorkflow:
-        def __init__(self, *, progress: Any) -> None:
+        def __init__(self, *, progress: Any, **_kwargs: Any) -> None:
             self._progress = progress
 
         async def run(
@@ -972,7 +1009,11 @@ def test_auth_login_reports_the_selected_native_browser_channel(
                 ),
             )
 
-    monkeypatch.setattr(cli_module, "_authentication", FakeAuthentication)
+    monkeypatch.setattr(
+        cli_module,
+        "_authentication",
+        lambda **_kwargs: FakeAuthentication(),
+    )
 
     result = CliRunner().invoke(
         app,
@@ -1130,7 +1171,7 @@ probe_path, workspace, input_path, plans_path = map(Path, sys.argv[1:])
 authentication = support._Authentication()
 adapters = {platform: support._Platform(platform) for platform in PLATFORM_ORDER}
 
-def workflow_factory(*, progress):
+def workflow_factory(*, progress, **_kwargs):
     return support._make_workflow(
         authentication,
         adapters,

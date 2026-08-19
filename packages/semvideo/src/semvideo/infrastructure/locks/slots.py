@@ -27,7 +27,10 @@ def _try_lock(stream: BinaryIO) -> bool:
         if os.name == "nt":
             msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
         else:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(  # type: ignore[attr-defined]
+                stream.fileno(),
+                fcntl.LOCK_EX | fcntl.LOCK_NB,  # type: ignore[attr-defined]
+            )
     except OSError:
         return False
     return True
@@ -38,7 +41,9 @@ def _unlock(stream: BinaryIO) -> None:
     if os.name == "nt":
         msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
     else:
-        fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+        fcntl.flock(  # type: ignore[attr-defined]
+            stream.fileno(), fcntl.LOCK_UN  # type: ignore[attr-defined]
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,7 +70,7 @@ class ResourceLimits:
     def for_resource(self, resource: str) -> int:
         if resource not in _RESOURCE_NAMES:
             raise ValueError(f"unknown resource: {resource}")
-        return getattr(self, resource)
+        return int(getattr(self, resource))
 
 
 class SlotLease(AbstractContextManager["SlotLease"]):

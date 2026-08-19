@@ -50,7 +50,7 @@ def test_skill_resolver_returns_compatible_absolute_cli_path() -> None:
     payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["command"] == str(cli.resolve())
-    assert payload["cli_version"] == "0.1.4"
+    assert payload["cli_version"] == "0.2.0"
     assert payload["skill_protocol_version"] == 1
 
 
@@ -86,11 +86,11 @@ def test_skill_resolver_reports_explicit_incompatible_cli(
     payload = json.loads(capsys.readouterr().err)
     assert exit_code == 4
     assert payload["code"] == "semvideo_cli_incompatible"
-    assert payload["expected"]["cli_version"] == "0.1.4"
+    assert payload["expected"]["cli_version"] == "0.2.0"
     assert payload["actual"]["cli_version"] == "0.1.0"
     assert payload["recovery"] == {
         "action": "install_matching_package",
-        "package": "semvideo==0.1.4",
+        "package": "semvideo==0.2.0",
     }
 
 
@@ -110,7 +110,7 @@ def test_context_gate_loads_required_context_and_caps_batch_submission(
         lambda: {
             "ok": True,
             "command": "C:/tools/semvideo.exe",
-            "cli_version": "0.1.4",
+            "cli_version": "0.2.0",
         },
     )
 

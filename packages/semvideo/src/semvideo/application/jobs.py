@@ -11,6 +11,7 @@ from semvideo.application.launcher import launch_worker
 from semvideo.application.locking import application_file_lock
 from semvideo.application.progress import ProgressSink, stage_progress
 from semvideo.application.source_store import register_source
+from semvideo.application.subagent_handoff import require_approved_profile
 from semvideo.application.task_store import TaskStore
 from semvideo.application.workspace import WorkspacePaths
 from semvideo.config import load_workspace_config
@@ -26,6 +27,7 @@ PROCESS_STAGES = (
     "segment",
     "evidence",
     "cinematography",
+    "subagent",
     "windows",
     "analyze",
     "reconcile",
@@ -46,7 +48,7 @@ def _admission_snapshot(
     active_jobs: list[dict[str, Any]] = []
     for job_id in store.list_job_ids():
         snapshot = get_job_snapshot(store, job_id)
-        if snapshot["state"] in TERMINAL_STATES or job_id in exempt_job_ids:
+        if snapshot["state"] in TERMINAL_STATES | {"awaiting_subagent", "subagent_ready"} or job_id in exempt_job_ids:
             continue
         active_jobs.append(
             {
@@ -164,7 +166,7 @@ def wait_for_job(
                 )
             )
         last_marker = marker
-        if state in TERMINAL_STATES:
+        if state in TERMINAL_STATES | {"awaiting_subagent", "subagent_ready"}:
             return snapshot
         time.sleep(poll_interval)
 
@@ -176,6 +178,8 @@ def submit_job(
     profile: str = "default",
     render: bool | None = None,
     idempotency_key: str | None = None,
+    subagent_context_tokens: int | None = None,
+    subagent_slots: int | None = None,
 ) -> dict[str, Any]:
     """Register a source, create or reuse a job, and launch its Worker."""
 
@@ -187,6 +191,24 @@ def submit_job(
             f"处理策略不存在：{profile}",
             profile=profile,
         )
+    subagent_request: dict[str, Any] | None = None
+    if subagent_context_tokens is not None:
+        if subagent_slots is not None and subagent_slots < 1:
+            raise config_error(
+                "subagent_capability_unavailable",
+                "Agent host reported no generic subagent capacity.",
+            )
+        tier, evidence_profile, profile_hash = require_approved_profile(
+            workspace, subagent_context_tokens
+        )
+        subagent_request = {
+            "backend": "crv_generic_subagent",
+            "effective_context_tokens": subagent_context_tokens,
+            "context_tier": tier.value,
+            "subagent_slots": subagent_slots or 1,
+            "evidence_profile": evidence_profile,
+            "evidence_profile_hash": profile_hash,
+        }
     source = register_source(workspace, input_video)
     store = TaskStore(workspace)
     request = {
@@ -196,6 +218,8 @@ def submit_job(
         },
         "overrides": ({"render_final_segments": render} if render is not None else {}),
     }
+    if subagent_request is not None:
+        request["subagent"] = subagent_request
     with application_file_lock(workspace.locks / "submit.lock"):
         existing = (
             store.find_by_idempotency_key(idempotency_key) if idempotency_key else None
@@ -275,6 +299,18 @@ def cancel_job(
             job_id=job_id,
             state=snapshot["state"],
         )
+    if snapshot["state"] in {"awaiting_subagent", "subagent_ready"}:
+        store.write_state(
+            job_id,
+            state="cancelled",
+            current_stage="subagent",
+            attempt_id=(
+                str(snapshot["attempt_id"]) if snapshot.get("attempt_id") else None
+            ),
+            progress={"reason": reason},
+            event_type="subagent_job_cancelled",
+        )
+        return get_job_snapshot(store, job_id)
     store.request_cancel(job_id, reason=reason)
     return get_job_snapshot(store, job_id)
 
@@ -284,7 +320,7 @@ def resume_job(workspace: WorkspacePaths, job_id: str) -> dict[str, Any]:
     store = TaskStore(workspace)
     with application_file_lock(workspace.locks / "submit.lock"):
         snapshot = store.reconcile_interrupted(job_id)
-        if snapshot["state"] not in {"interrupted", "failed", "created"}:
+        if snapshot["state"] not in {"interrupted", "failed", "created", "subagent_ready"}:
             raise config_error(
                 "job_not_resumable",
                 f"任务当前状态不能恢复：{snapshot['state']}",

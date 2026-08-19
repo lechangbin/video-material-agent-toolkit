@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Iterable
+from typing import cast
 
 from semvideo.adapters.ffmpeg import FfmpegAdapter
 from semvideo.modules.media.models import CandidateTimeline
@@ -88,7 +89,7 @@ def difference_hash(path: Path) -> int:
         raise RuntimeError("Pillow is required for evidence frame deduplication") from exc
     with Image.open(path) as image:
         gray = image.convert("L").resize((9, 8))
-        pixels = list(gray.get_flattened_data())
+        pixels = list(cast(Sequence[int], gray.get_flattened_data()))
     value = 0
     for row in range(8):
         offset = row * 9

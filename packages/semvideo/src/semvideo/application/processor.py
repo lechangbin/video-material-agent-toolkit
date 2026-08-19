@@ -37,6 +37,8 @@ from semvideo.application.range_export import (
     export_time_range,
 )
 from semvideo.application.source_store import resolve_source, sha256_file
+from semvideo.application.subagent_contracts import VideoUnderstandingAgentResult
+from semvideo.application.subagent_handoff import prepare_request
 from semvideo.application.task_store import TaskStore, new_opaque_id, utc_now
 from semvideo.application.workspace import WorkspacePaths
 from semvideo.config import WorkspaceConfig
@@ -52,10 +54,9 @@ from semvideo.infrastructure.locks import (
     ResourceLimits,
     ResourceLockManager,
 )
+from semvideo.infrastructure.managed_crv import FrozenCrvRuntime, ManagedCrvRuntime
 from semvideo.modules.cinematography import (
-    CinematographyAnnotation,
     CinematographyEvidence,
-    CinematographyResponse,
     ShotEvidencePolicy,
     ShotTimeline,
     build_shot_timeline,
@@ -74,6 +75,8 @@ from semvideo.modules.evidence import (
     FasterWhisperTranscriber,
     NativeEvidenceAdapter,
 )
+from semvideo.modules.evidence.crv_bridge import CrvBridge
+from semvideo.modules.evidence.crv_contracts import GlobalUnderstandingEvidencePackage
 from semvideo.modules.evidence.models import DedupDecision
 from semvideo.modules.media import (
     CandidateBoundary as MediaCandidateBoundary,
@@ -93,6 +96,7 @@ from semvideo.modules.planning import MergePlan
 from semvideo.modules.retrieval.records import build_record, read_records, write_records
 from semvideo.modules.semantics import (
     SegmentationResponse,
+    SemanticSegment,
     build_segmentation_proposal,
     response_from_proposal,
     validate_response_timeline,
@@ -361,6 +365,93 @@ def _evidence_from_dict(value: dict[str, Any]) -> EvidenceTimeline:
     )
 
 
+def _timeline_from_crv(
+    package: GlobalUnderstandingEvidencePackage,
+    *,
+    relative_root: Path,
+    package_root: Path,
+) -> EvidenceTimeline:
+    frames = tuple(
+        EvidenceFrame(
+            evidence_frame_id=frame.frame_id,
+            timestamp_ms=round(frame.timestamp_seconds * 1000),
+            artifact_id=f"artifact_{frame.sha256[:24]}",
+            relative_path=(relative_root / frame.relative_path).as_posix(),
+            extraction_reasons=("crv_scene_aware",),
+            scene_score=None,
+            dedup=DedupDecision(decision="keep", reason="crv_deduplicated"),
+        )
+        for frame in package.frames
+    )
+    grids = sorted((package_root / "grids").glob("*.jpg"))
+    sheets: list[ContactSheet] = []
+    for index, grid in enumerate(grids, start=1):
+        start = (index - 1) * 9
+        cell_ids = tuple(frame.evidence_frame_id for frame in frames[start : start + 9])
+        if not cell_ids:
+            continue
+        digest = sha256_file(grid)
+        sheets.append(
+            ContactSheet(
+                contact_sheet_id=f"crv_grid_{index:04d}",
+                artifact_id=f"artifact_{digest[:24]}",
+                relative_path=(relative_root / "grids" / grid.name).as_posix(),
+                rows=3,
+                columns=3,
+                cell_frame_ids=cell_ids,
+            )
+        )
+    transcripts = tuple(
+        TranscriptSpan(
+            transcript_span_id=span.span_id,
+            start_ms=round(span.start_seconds * 1000),
+            end_ms=round(span.end_seconds * 1000),
+            text=span.text,
+            source="crv",
+        )
+        for span in package.transcript
+    )
+    return EvidenceTimeline(
+        schema_version=1,
+        source_video_id=package.source_video_id,
+        frames=frames,
+        contact_sheets=tuple(sheets),
+        transcript_spans=transcripts,
+    )
+
+
+def _crv_runtime(
+    workspace: WorkspacePaths, job_root: Path
+) -> tuple[FrozenCrvRuntime, Path]:
+    local_data = os.environ.get("LOCALAPPDATA")
+    runtime_root = (
+        Path(local_data) / "video-material-agent-toolkit" / "runtimes" / "crv"
+        if local_data
+        else workspace.data / "runtimes" / "crv"
+    )
+    manager = ManagedCrvRuntime(runtime_root)
+    record_path = job_root / "evidence" / "crv-runtime.json"
+    if record_path.is_file():
+        record = read_versioned_json(record_path)
+        return manager.freeze(str(record["version"])), record_path
+    if manager.update_due():
+        try:
+            runtime = manager.install_candidate()
+        except SemvideoError:
+            runtime = manager.active()
+    else:
+        runtime = manager.active()
+    atomic_write_json(
+        record_path,
+        {
+            "schema_version": 1,
+            "version": runtime.version,
+            "package_hash": runtime.package_hash,
+        },
+    )
+    return runtime, record_path
+
+
 def _semantic_anchors(
     timeline: MediaCandidateTimeline,
     *,
@@ -543,13 +634,12 @@ def _model_segment(
                     raise error from second_error
                 result = repaired
     except SemvideoError as error:
-        if not hasattr(error, "model_attempts"):
+        if not error.model_attempts:
             error.model_attempts = [
                 *attempts,
                 *list(getattr(error, "provider_attempts", [])),
             ]
-        if not hasattr(error, "repair_attempted"):
-            error.repair_attempted = repair_attempted
+        error.repair_attempted = error.repair_attempted or repair_attempted
         raise
     total_usage = aggregate_usage(attempts)
     return response, {
@@ -957,10 +1047,20 @@ def run_job(
         progress_sink=progress_sink,
     )
     try:
+        subagent_options = job.get("request", {}).get("subagent")
+        crv_package_path = job_root / "evidence" / "global-understanding-evidence.json"
+        crv_runtime_record: Path | None = None
+        crv_runtime = None
+        if isinstance(subagent_options, dict):
+            crv_runtime, crv_runtime_record = _crv_runtime(workspace, job_root)
         evidence_inputs = [
             sha256_file(media_candidate_path),
             analysis_media.content_hash,
         ]
+        if crv_runtime is not None:
+            evidence_inputs.extend(
+                [crv_runtime.version, crv_runtime.package_hash, str(subagent_options["evidence_profile_hash"])]
+            )
         if _checkpoint_valid(
             store,
             job_id,
@@ -970,30 +1070,67 @@ def run_job(
         ):
             evidence = _evidence_from_dict(read_versioned_json(evidence_path))
         else:
-            with _resource(
-                locks,
-                "media",
-                store=store,
-                job_id=job_id,
-                attempt_id=attempt_id,
-                stage="evidence",
-            ):
-                evidence = NativeEvidenceAdapter(ffmpeg=ffmpeg).extract(
-                    analysis_source,
-                    media_timeline,
-                    job_root / "evidence",
-                    media_facts=facts,
-                    transcript_source=source,
-                    transcript_media_facts=facts,
-                    evidence_policy=EvidencePolicy(
-                        maximum_interval_ms=round(
-                            config.evidence.periodic_anchor_seconds * 1000
+            if crv_runtime is not None and isinstance(subagent_options, dict):
+                package_root = job_root / "evidence" / "crv"
+                with _resource(
+                    locks,
+                    "media",
+                    store=store,
+                    job_id=job_id,
+                    attempt_id=attempt_id,
+                    stage="evidence",
+                ):
+                    package = CrvBridge(crv_runtime).extract(
+                        analysis_source,
+                        package_root,
+                        source_video_id=str(job["source_video_id"]),
+                        source_sha256=source_hash,
+                        evidence_profile=(
+                            f"approved-{subagent_options['context_tier']}/"
+                            f"{subagent_options['evidence_profile_hash']}"
                         ),
-                        max_frames=config.evidence.max_frames,
-                    ),
-                    transcribe_if_no_subtitles=False,
+                        max_frames=int(subagent_options["evidence_profile"]["max_images"]),
+                        language=config.evidence.language,
+                        transcribe=config.evidence.transcribe,
+                    )
+                atomic_write_json(
+                    crv_package_path,
+                    package.model_dump(mode="json"),
                 )
-            if not evidence.transcript_spans and config.evidence.transcribe:
+                evidence = _timeline_from_crv(
+                    package,
+                    relative_root=Path("crv"),
+                    package_root=package_root,
+                )
+            else:
+                with _resource(
+                    locks,
+                    "media",
+                    store=store,
+                    job_id=job_id,
+                    attempt_id=attempt_id,
+                    stage="evidence",
+                ):
+                    evidence = NativeEvidenceAdapter(ffmpeg=ffmpeg).extract(
+                        analysis_source,
+                        media_timeline,
+                        job_root / "evidence",
+                        media_facts=facts,
+                        transcript_source=source,
+                        transcript_media_facts=facts,
+                        evidence_policy=EvidencePolicy(
+                            maximum_interval_ms=round(
+                                config.evidence.periodic_anchor_seconds * 1000
+                            ),
+                            max_frames=config.evidence.max_frames,
+                        ),
+                        transcribe_if_no_subtitles=False,
+                    )
+            if (
+                crv_runtime is None
+                and not evidence.transcript_spans
+                and config.evidence.transcribe
+            ):
                 transcriber = FasterWhisperTranscriber(
                     FasterWhisperConfig(
                         model_name_or_path=config.evidence.whisper_model,
@@ -1034,6 +1171,10 @@ def run_job(
                 job_root / "evidence" / sheet.relative_path
                 for sheet in evidence.contact_sheets
             ]
+            if crv_package_path.is_file():
+                evidence_artifacts.append(crv_package_path)
+            if crv_runtime_record is not None:
+                evidence_artifacts.append(crv_runtime_record)
             _complete_stage(
                 store,
                 job_id,
@@ -1062,6 +1203,7 @@ def run_job(
         analysis_media.content_hash,
         sha256_file(shot_timeline_path),
     ]
+    cinematography_rows: list[dict[str, Any]]
     if _checkpoint_valid(
         store,
         job_id,
@@ -1106,7 +1248,7 @@ def run_job(
                 bundle.shot_id: [frame.frame_id for frame in bundle.frames]
                 for bundle in cinematography_evidence.shots
             }
-            cinematography_rows: list[dict[str, Any]] = []
+            cinematography_rows = []
             model_outputs: list[Path] = []
             batch_size = config.cinematography.max_shots_per_request
             for offset in range(
@@ -1290,8 +1432,22 @@ def run_job(
             input_hashes=windows_inputs,
         )
 
+    validated_subagent_result_path = job_root / "subagent" / "validated-result.json"
+    if isinstance(subagent_options, dict) and not validated_subagent_result_path.is_file():
+        checkpoint = prepare_request(
+            workspace,
+            job_id,
+            effective_context_tokens=int(subagent_options["effective_context_tokens"]),
+            subagent_slots=int(subagent_options["subagent_slots"]),
+        )
+        return {
+            "job_id": job_id,
+            "state": "awaiting_subagent",
+            "source_video_id": job["source_video_id"],
+            "action_required": checkpoint,
+        }
+
     proposal_path = job_root / "semantics" / "segmentation-proposals.jsonl"
-    model_run_id: str
     _begin_stage(
         store,
         job_id,
@@ -1304,6 +1460,8 @@ def run_job(
         sha256_file(grids_path),
         sha256_file(transcript_path),
     ]
+    if isinstance(subagent_options, dict):
+        analyze_inputs.append(sha256_file(validated_subagent_result_path))
     if _checkpoint_valid(
         store,
         job_id,
@@ -1314,6 +1472,51 @@ def run_job(
         proposal_row = read_versioned_json_lines(proposal_path)[0]
         response = response_from_proposal(proposal_row, anchors=anchors)
         model_run_id = str(proposal_row["model_run_id"])
+    elif isinstance(subagent_options, dict):
+        imported_result = VideoUnderstandingAgentResult.model_validate(
+            read_versioned_json(validated_subagent_result_path)
+        )
+        response = SegmentationResponse(
+            segments=[
+                SemanticSegment(
+                    title=segment.summary[:80],
+                    short_summary=segment.summary,
+                    detailed_summary=segment.summary,
+                    visual_summary=segment.summary,
+                    event=("、".join(segment.actions) or segment.summary),
+                    start_anchor_id=segment.start_anchor_id,
+                    end_anchor_id=segment.end_anchor_id,
+                    reason="validated_generic_subagent_timeline",
+                    topics=list(segment.entities),
+                    objects=list(segment.entities),
+                    actions=list(segment.actions),
+                    keywords=list(dict.fromkeys((*segment.entities, *segment.actions))),
+                    confidence=segment.confidence,
+                )
+                for segment in imported_result.segments
+            ]
+        )
+        validate_response_timeline(response, anchors)
+        model_run_id = imported_result.agent_attempt_id
+        proposal_row = build_segmentation_proposal(
+            evidence_window_id=str(window_rows[0]["evidence_window_id"]),
+            model_run_id=model_run_id,
+            response=response,
+            anchors=anchors,
+            evidence_frames=[frame.to_dict() for frame in evidence.frames],
+            transcript_spans=[span.to_dict() for span in evidence.transcript_spans],
+        )
+        _write_jsonl(proposal_path, [proposal_row])
+        _complete_stage(
+            store,
+            job_id,
+            "analyze",
+            attempt_id=attempt_id,
+            job_root=job_root,
+            outputs=[proposal_path, validated_subagent_result_path],
+            config_hash=config_hash,
+            input_hashes=analyze_inputs,
+        )
     else:
         messages = segmentation_messages(
             anchors=anchors,
