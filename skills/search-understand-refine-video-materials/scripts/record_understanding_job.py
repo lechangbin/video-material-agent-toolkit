@@ -110,6 +110,7 @@ def record_job(
     item_id: str,
     response: dict[str, Any],
     response_hash: str,
+    lineage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if batch.get("schema_version") != BATCH_SCHEMA:
         raise JobRecordError("understanding batch schema is unsupported")
@@ -148,7 +149,7 @@ def record_job(
         ),
         None,
     )
-    record = {
+    record: dict[str, Any] = {
         "item_id": item_id,
         "asset_sha256": batch_item["asset_sha256"],
         "semvideo_profile": batch_item["semvideo_profile"],
@@ -157,6 +158,12 @@ def record_job(
         "submission_state": response.get("state"),
         "process_response_sha256": response_hash,
     }
+    if lineage is not None:
+        if not isinstance(lineage, dict):
+            raise JobRecordError("understanding lineage must be an object")
+        normalized = {key: value for key, value in lineage.items() if key and value is not None}
+        if normalized:
+            record["lineage"] = dict(normalized)
     if existing is not None and existing != record:
         raise JobRecordError(f"batch item is already bound to another job: {item_id}")
     if existing is None:
@@ -172,6 +179,13 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--previous-jobs", action="append", default=[])
     parser.add_argument("--item-id")
     parser.add_argument("--process-response")
+    parser.add_argument(
+        "--lineage",
+        help=(
+            "Optional JSON object preserving CRV, context-tier, attempt, "
+            "result, validation, and Semvideo import hashes for this item."
+        ),
+    )
     return parser
 
 
@@ -200,12 +214,18 @@ def main(argv: list[str] | None = None) -> int:
                 Path(arguments.process_response).expanduser().resolve(strict=True)
             )
             response_bytes = response_path.read_bytes()
+            lineage = (
+                _load_object(Path(arguments.lineage).expanduser().resolve(strict=True))
+                if arguments.lineage
+                else None
+            )
             payload = record_job(
                 batch=batch,
                 jobs=payload,
                 item_id=arguments.item_id,
                 response=_load_object(response_path),
                 response_hash=hashlib.sha256(response_bytes).hexdigest(),
+                lineage=lineage,
             )
         _atomic_write_json(jobs_path, payload)
     except (JobRecordError, OSError, ValueError, KeyError) as error:
