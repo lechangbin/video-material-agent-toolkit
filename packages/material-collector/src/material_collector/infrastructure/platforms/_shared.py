@@ -142,7 +142,7 @@ async def fetch_to_destination(
         except MediaInspectionError as exc:
             raise PlatformAdapterError(
                 "media_inspection_failed",
-                "ffprobe could not validate the downloaded media.",
+                "FFmpeg could not fully decode the downloaded media.",
                 platform=platform,
                 operation="fetch",
                 retryable=True,

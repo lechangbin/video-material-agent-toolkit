@@ -9,7 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-EXPECTED_CLI_VERSION = "0.2.0"
+EXPECTED_CLI_VERSION = "0.2.1"
 EXPECTED_SKILL_PROTOCOL = 1
 EXPECTED_COLLECTION_INPUT_SCHEMA = {"min": "1.0", "max": "1.0"}
 EXPECTED_QUERY_PLANS_SCHEMA = {"min": "2.0", "max": "2.0"}
