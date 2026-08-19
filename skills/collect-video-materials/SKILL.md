@@ -21,8 +21,9 @@ PowerShell launcher.
    expose the complete request shapes and commands; do not discover either contract with `--help`,
    `contracts normalize`, trial JSON, source inspection, or PATH probing.
 3. Validate that the workspace and versioned JSON inputs are explicit. QueryPlans must use
-   schema 2.0, declare one non-empty `platform_scope`, and copy that complete scope into every
-   expression's `target_platforms`.
+   schema 3.0 and contain exactly one language-labelled query branch for every platform in the
+   non-empty frozen `platform_scope`. Each expression belongs to one branch and carries its own
+   bounded result budget.
 4. On Windows, invoke `scripts/invoke-collector.ps1` for every `run`, `resume`, `status`, or
    `cancel` and pass the resolver's command through `ResolvedCollectorPath`. This freezes both the
    executor and child CLI to that validated file even if PATH contains an older installation. On
@@ -50,6 +51,9 @@ continuations, or a second terminal command to replace it.
 - Treat `authentication_login_waiting` as a human action. Tell the user which platform needs
   login and which frozen browser channel was selected, then ask them to check that Edge or Chrome
   window in the taskbar. Keep the executor alive.
+- Treat `foreign_proxy_required`, `foreign_proxy_unreachable`, and managed-runtime update errors
+  as fail-closed foreign-platform results. Preserve the route evidence and never retry through a
+  direct connection. Domestic branches remain direct even when a foreign proxy is available.
 - Treat an unchanged log as normal during human login. Never use log silence as proof of death.
 - Treat `search_plan_started`, `search_plan_committed`, and `search_plan_settled` as progress
   only, never as the final session result. `search_plan_committed` means every request in that
@@ -88,6 +92,9 @@ Use the final JSON as the authority:
 - `action_required.actor=agent`: follow only the named versioned artifact contract. If no such
   contract is linked in the result or this Skill, stop with a contract error instead of guessing.
 - `status=integration_required`: stop at the declared external integration boundary.
+- Geometry disposition `rejected` or `unknown` after staged-byte verification excludes that media
+  from understanding. Preserve the source record and reason; never redownload it in a later gap
+  round unless the upstream media identity changed.
 - `status=cancelled|completed`: stop; do not resume a terminal session.
 
 When presenting downloaded material, use each primary asset's `display_relative_path` as the

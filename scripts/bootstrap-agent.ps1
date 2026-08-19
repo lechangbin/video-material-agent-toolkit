@@ -218,11 +218,12 @@ try {
             $release.assets | Where-Object {
                 $_.name -eq 'SHA256SUMS.txt' -or
                 $_.name -like 'video_material_collector-*.whl' -or
-                $_.name -like 'semvideo-*.whl'
+                $_.name -like 'semvideo-*.whl' -or
+                $_.name -like 'media_conformance-*.whl'
             }
         )
-        if ($requiredAssets.Count -ne 3) {
-            throw "Release '$resolvedReleaseTag' must contain two wheels and SHA256SUMS.txt."
+        if ($requiredAssets.Count -ne 4) {
+            throw "Release '$resolvedReleaseTag' must contain three wheels and SHA256SUMS.txt."
         }
 
         $temporaryReleaseDirectory = Join-Path ([System.IO.Path]::GetTempPath()) (

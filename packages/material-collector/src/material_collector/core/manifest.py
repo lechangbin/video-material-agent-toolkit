@@ -6,7 +6,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from material_collector.core.media import AssetRecord, Platform
+from material_collector.core.media import (
+    AssetRecord,
+    AuthorizationDisposition,
+    DisplayGeometryAssessment,
+    NetworkRoute,
+    NetworkRouteEvidence,
+    Platform,
+)
 
 
 class _ManifestModel(BaseModel):
@@ -85,6 +92,11 @@ class ManifestMediaUnit(_ManifestModel):
     source_role: Literal["primary", "fallback"] | None = None
     fallback_order: int | None = None
     eligible_for_understanding: bool = True
+    network_route: NetworkRoute | None = None
+    route_evidence: NetworkRouteEvidence | None = None
+    yt_dlp_version: str | None = None
+    authorization_disposition: AuthorizationDisposition | None = None
+    geometry_assessment: DisplayGeometryAssessment | None = None
 
 
 class ManifestCandidate(_ManifestModel):
@@ -99,10 +111,15 @@ class ManifestCandidate(_ManifestModel):
     duration_seconds: float | None
     discoveries: tuple[DiscoveryLink, ...]
     media_units: tuple[ManifestMediaUnit, ...]
+    network_route: NetworkRoute | None = None
+    route_evidence: NetworkRouteEvidence | None = None
+    yt_dlp_version: str | None = None
+    authorization_disposition: AuthorizationDisposition | None = None
+    geometry_assessment: DisplayGeometryAssessment | None = None
 
 
 class CollectionResult(_ManifestModel):
-    schema_version: Literal["2.0"] = "2.0"
+    schema_version: Literal["3.0"] = "3.0"
     session_id: str
     workspace_path: str
     platform_scope: tuple[Platform, ...]

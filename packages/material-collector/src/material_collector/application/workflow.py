@@ -55,6 +55,7 @@ from material_collector.core.manifest import (
 from material_collector.core.media import (
     PLATFORM_ORDER,
     FetchRequest,
+    GeometryDisposition,
     MediaQuality,
     MediaUnit,
     Platform,
@@ -146,6 +147,7 @@ class CollectionWorkflow:
         search_browser_sessions: SearchBrowserSessions | None = None,
         progress: ProgressReporter | None = None,
         lease_maintenance_interval_seconds: float = 5.0,
+        platform_scope: tuple[Platform, ...] | None = None,
     ) -> None:
         if lease_maintenance_interval_seconds <= 0:
             raise ValueError("lease_maintenance_interval_seconds must be positive")
@@ -161,9 +163,16 @@ class CollectionWorkflow:
         self._search_browser_sessions = search_browser_sessions
         self._progress = progress
         self._lease_maintenance_interval_seconds = lease_maintenance_interval_seconds
-        _require_platform_adapters(self._search_providers, "search provider")
-        _require_platform_adapters(self._source_resolvers, "source resolver")
-        _require_platform_adapters(self._media_fetchers, "media fetcher")
+        required_platforms = platform_scope or tuple(self._search_providers)
+        _require_platform_adapters(
+            self._search_providers, "search provider", required_platforms
+        )
+        _require_platform_adapters(
+            self._source_resolvers, "source resolver", required_platforms
+        )
+        _require_platform_adapters(
+            self._media_fetchers, "media fetcher", required_platforms
+        )
 
     async def run(
         self,
@@ -454,6 +463,7 @@ class CollectionWorkflow:
                             query_id=query.query_id,
                             round_number=1,
                             text=query.text,
+                            limit=query.budget,
                         )
                         requests_by_platform[platform].append(request)
                 jobs = [
@@ -666,6 +676,26 @@ class CollectionWorkflow:
                 list[tuple[str, str]],
             ] = {platform: [] for platform in PLATFORM_ORDER}
             for candidate in manifest.candidates:
+                if (
+                    candidate.geometry_assessment is not None
+                    and candidate.geometry_assessment.disposition
+                    is GeometryDisposition.REJECTED
+                ):
+                    issues.append(
+                        WorkflowIssue(
+                            stage="geometry_prefilter",
+                            code="source_geometry_ineligible",
+                            message="Platform metadata excludes a non-16:9 source.",
+                            details={
+                                "platform": candidate.platform,
+                                "candidate_id": candidate.candidate_id,
+                                "geometry": candidate.geometry_assessment.model_dump(
+                                    mode="json"
+                                ),
+                            },
+                        )
+                    )
+                    continue
                 if not candidate.media_units:
                     candidates_by_platform[candidate.platform].append(
                         (candidate.source_id, candidate.canonical_url)
@@ -1428,8 +1458,9 @@ class CollectionWorkflow:
 def _require_platform_adapters(
     adapters: Mapping[Platform, object],
     label: str,
+    platforms: tuple[Platform, ...],
 ) -> None:
-    missing = [platform.value for platform in PLATFORM_ORDER if platform not in adapters]
+    missing = [platform.value for platform in platforms if platform not in adapters]
     if missing:
         raise ValueError(f"Missing {label} adapters for: {', '.join(missing)}")
 

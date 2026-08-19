@@ -29,7 +29,7 @@ material-collector media fetch-hq
 material-collector version
 ```
 
-`run` 会冻结输入，只检查 QueryPlans 2.0 范围内的平台登录态；Windows 原生模式默认先尝试 Edge、再尝试
+`run` 会冻结输入，只检查 QueryPlans 3.0 范围内的平台登录态；Windows 原生模式默认先尝试 Edge、再尝试
 Chrome，需要登录时打开所选浏览器的有头窗口，随后固定使用同一通道的无头浏览器
 并发搜索范围内的 Bilibili、抖音和/或小红书，解析媒体单元并下载低码率
 代理。低码率代理选择源站最高且不超过 720p 的版本，并在落地后通过本地
@@ -57,7 +57,7 @@ CLI 内伪造理解、Top-K、落库或素材充分性结果。
 `contracts normalize` 是无状态、只读的机器接口，用于让外部编排在创建会话前取得与
 `run` 完全相同的规范化采集输入和 QueryPlan；它不创建会话或写入素材工作区。
 `contracts schema` 从同一组 Pydantic 输入模型返回 Collection input 1.0 与
-QueryPlans 2.0 的机器可读 Schema；`version` 返回 CLI 0.2.1、Skill 协议 1 和支持的
+QueryPlans 3.0 的机器可读 Schema；`version` 返回 CLI 0.3.0、Skill 协议 1 和支持的
 输入范围。安装后的 Skill 解析器先用 `version` 确认精确兼容性，正常请求直接读取
 Skill 随附的 Schema 和最小示例，不通过运行时失败猜字段。
 

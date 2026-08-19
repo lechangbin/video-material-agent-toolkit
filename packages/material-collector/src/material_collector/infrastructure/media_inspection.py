@@ -18,6 +18,11 @@ from typing import Any, cast
 
 from material_collector.core.errors import CollectorError
 from material_collector.core.fingerprints import FingerprintMatch
+from material_collector.core.media import (
+    DisplayGeometryAssessment,
+    GeometryDisposition,
+    GeometryStage,
+)
 
 _AUDIO_SAMPLE_RATE = 11_025
 _AUDIO_ANALYSIS_SECONDS = 120
@@ -113,6 +118,9 @@ class MediaProbe:
     height: int | None
     video_stream_count: int
     audio_stream_count: int
+    sample_aspect_ratio: str | None = None
+    display_aspect_ratio: str | None = None
+    rotation_degrees: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,7 +203,11 @@ def _probe_media(
             "-v",
             "error",
             "-show_entries",
-            "format=duration,format_name:stream=codec_type,width,height",
+            (
+                "format=duration,format_name:"
+                "stream=codec_type,width,height,sample_aspect_ratio,display_aspect_ratio:"
+                "stream_tags=rotate:stream_side_data=rotation"
+            ),
             "-of",
             "json",
             str(media_path),
@@ -217,6 +229,9 @@ def _probe_media(
     container = _optional_string(format_record.get("format_name"))
     width = _optional_positive_int(primary_video.get("width"))
     height = _optional_positive_int(primary_video.get("height"))
+    sample_aspect_ratio = _optional_string(primary_video.get("sample_aspect_ratio"))
+    display_aspect_ratio = _optional_string(primary_video.get("display_aspect_ratio"))
+    rotation = _rotation(primary_video)
     return MediaProbe(
         path=media_path,
         duration_seconds=duration,
@@ -225,6 +240,60 @@ def _probe_media(
         height=height,
         video_stream_count=len(video_streams),
         audio_stream_count=len(audio_streams),
+        sample_aspect_ratio=sample_aspect_ratio,
+        display_aspect_ratio=display_aspect_ratio,
+        rotation_degrees=rotation,
+    )
+
+
+def assess_display_geometry(
+    probe: MediaProbe,
+    *,
+    stage: GeometryStage,
+    tolerance: float = 0.01,
+) -> DisplayGeometryAssessment:
+    """Assess normalized display geometry against 16:9 without changing composition."""
+
+    if tolerance < 0:
+        raise ValueError("tolerance must not be negative")
+    width = probe.width
+    height = probe.height
+    if width is None or height is None:
+        return DisplayGeometryAssessment(
+            stage=stage,
+            disposition=GeometryDisposition.UNKNOWN,
+            encoded_width=width,
+            encoded_height=height,
+            rotation_degrees=probe.rotation_degrees,
+            sample_aspect_ratio=probe.sample_aspect_ratio,
+            display_aspect_ratio=probe.display_aspect_ratio,
+            reason_code="display_geometry_missing",
+        )
+    sar = _ratio(probe.sample_aspect_ratio) or 1.0
+    display_width = width * sar
+    display_height = float(height)
+    rotation = (probe.rotation_degrees or 0) % 360
+    if rotation in {90, 270}:
+        display_width, display_height = display_height, display_width
+    ratio = display_width / display_height
+    target = 16 / 9
+    deviation = abs(ratio - target) / target
+    disposition = (
+        GeometryDisposition.ACCEPTED
+        if deviation <= tolerance
+        else GeometryDisposition.REJECTED
+    )
+    return DisplayGeometryAssessment(
+        stage=stage,
+        disposition=disposition,
+        encoded_width=width,
+        encoded_height=height,
+        rotation_degrees=probe.rotation_degrees,
+        sample_aspect_ratio=probe.sample_aspect_ratio,
+        display_aspect_ratio=probe.display_aspect_ratio,
+        normalized_display_ratio=ratio,
+        deviation_from_16_9=deviation,
+        reason_code=None if disposition is GeometryDisposition.ACCEPTED else "not_16_9",
     )
 
 
@@ -531,6 +600,43 @@ def _optional_positive_int(value: object) -> int | None:
     if not isinstance(value, int) or isinstance(value, bool) or value < 1:
         return None
     return value
+
+
+def _ratio(value: str | None) -> float | None:
+    if not value or value in {"0:1", "N/A"}:
+        return None
+    separator = ":" if ":" in value else "/" if "/" in value else None
+    if separator is None:
+        return None
+    numerator_text, denominator_text = value.split(separator, 1)
+    try:
+        numerator = float(numerator_text)
+        denominator = float(denominator_text)
+    except ValueError:
+        return None
+    if numerator <= 0 or denominator <= 0:
+        return None
+    return numerator / denominator
+
+
+def _rotation(stream: dict[str, Any]) -> int | None:
+    tags = stream.get("tags")
+    if isinstance(tags, dict):
+        value = tags.get("rotate")
+        try:
+            return int(float(str(value)))
+        except (TypeError, ValueError):
+            pass
+    side_data = stream.get("side_data_list")
+    if isinstance(side_data, list):
+        for item in side_data:
+            if not isinstance(item, dict) or "rotation" not in item:
+                continue
+            try:
+                return int(float(str(item["rotation"])))
+            except (TypeError, ValueError):
+                continue
+    return None
 
 
 def _validate_threshold(name: str, value: float) -> None:

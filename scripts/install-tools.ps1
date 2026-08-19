@@ -20,13 +20,18 @@ $collectorWheels = @(
 $semvideoWheels = @(
     Get-ChildItem -LiteralPath $releasePath -Filter 'semvideo-*.whl'
 )
+$conformanceWheels = @(
+    Get-ChildItem -LiteralPath $releasePath -Filter 'media_conformance-*.whl'
+)
 
-if ($collectorWheels.Count -ne 1 -or $semvideoWheels.Count -ne 1) {
-    throw 'ReleaseDirectory must contain exactly one wheel for each tool.'
+if ($collectorWheels.Count -ne 1 -or $semvideoWheels.Count -ne 1 -or
+    $conformanceWheels.Count -ne 1) {
+    throw 'ReleaseDirectory must contain exactly one wheel for each of the three tools.'
 }
 
 $collectorWheel = $collectorWheels[0]
 $semvideoWheel = $semvideoWheels[0]
+$conformanceWheel = $conformanceWheels[0]
 
 function Test-BrowserChannel {
     param(
@@ -82,7 +87,7 @@ foreach ($line in Get-Content -LiteralPath $checksumPath) {
     }
 }
 
-foreach ($wheel in @($collectorWheel, $semvideoWheel)) {
+foreach ($wheel in @($collectorWheel, $semvideoWheel, $conformanceWheel)) {
     if (-not $expectedHashes.ContainsKey($wheel.Name)) {
         throw "Missing checksum for $($wheel.Name)."
     }
@@ -154,8 +159,16 @@ if ($LASTEXITCODE -ne 0) {
     throw "semvideo installation failed.`n$($semvideoOutput -join [Environment]::NewLine)"
 }
 
+$conformanceOutput = @(
+    & uv tool install --force --python $PythonExecutable $conformanceWheel.FullName 2>&1
+)
+if ($LASTEXITCODE -ne 0) {
+    throw "media-conformance installation failed.`n$($conformanceOutput -join [Environment]::NewLine)"
+}
+
 $collectorCommand = Get-Command material-collector -ErrorAction SilentlyContinue
 $semvideoCommand = Get-Command semvideo -ErrorAction SilentlyContinue
+$conformanceCommand = Get-Command media-conformance -ErrorAction SilentlyContinue
 
 [ordered]@{
     status = 'installed'
@@ -168,6 +181,11 @@ $semvideoCommand = Get-Command semvideo -ErrorAction SilentlyContinue
         $semvideoCommand.Source
     } else {
         'installed in the Python user Scripts directory; the Skill can resolve it directly'
+    }
+    media_conformance = if ($null -ne $conformanceCommand) {
+        $conformanceCommand.Source
+    } else {
+        'installed by uv; reopen the terminal or run uv tool update-shell'
     }
     ffmpeg_requested = [bool]$InstallFfmpeg
     browser_channel_requested = $BrowserChannel

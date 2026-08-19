@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from semvideo.adapters.ffmpeg import FfmpegAdapter, MediaFacts, SubtitleStreamFacts
 

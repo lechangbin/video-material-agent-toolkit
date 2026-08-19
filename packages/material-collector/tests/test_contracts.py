@@ -10,7 +10,7 @@ from material_collector.core.contracts import (
     contract_schema_bundle,
     normalize_contracts,
 )
-from material_collector.core.errors import ContractError
+from material_collector.core.errors import ContractError, ContractVersionError
 
 REPOSITORY_ROOT = Path(__file__).parents[3]
 CONTRACT_REFERENCES = REPOSITORY_ROOT / "skills" / "collect-video-materials" / "references"
@@ -28,8 +28,25 @@ def collection_document() -> dict[str, Any]:
 
 
 def query_plan_document() -> dict[str, Any]:
+    def branches(key: str, text: str, facet_id: str) -> list[dict[str, Any]]:
+        return [
+            {
+                "platform": platform,
+                "language": "zh-CN",
+                "queries": [
+                    {
+                        "query_id": f"query_{key}_{platform}",
+                        "text": f" {text}   {platform} 素材 ",
+                        "facet_ids": [facet_id],
+                        "budget": 20,
+                    }
+                ],
+            }
+            for platform in ("bilibili", "douyin", "xiaohongshu")
+        ]
+
     return {
-        "schema_version": "2.0",
+        "schema_version": "3.0",
         "platform_scope": ["bilibili", "douyin", "xiaohongshu"],
         "plans": [
             {
@@ -38,18 +55,7 @@ def query_plan_document() -> dict[str, Any]:
                 "required_visual_facets": [
                     {"facet_id": "facet_first", "description": "第一段主体"}
                 ],
-                "initial_queries": [
-                    {
-                        "query_id": "query_first",
-                        "text": " 第一段   素材 ",
-                        "target_platforms": [
-                            "xiaohongshu",
-                            "bilibili",
-                            "douyin",
-                        ],
-                        "facet_ids": ["facet_first"],
-                    }
-                ],
+                "platform_branches": branches("first", "第一段", "facet_first"),
             },
             {
                 "segment_id": "seg_001",
@@ -57,18 +63,7 @@ def query_plan_document() -> dict[str, Any]:
                 "required_visual_facets": [
                     {"facet_id": "facet_second", "description": "第二段主体"}
                 ],
-                "initial_queries": [
-                    {
-                        "query_id": "query_second",
-                        "text": "第二段素材",
-                        "target_platforms": [
-                            "douyin",
-                            "xiaohongshu",
-                            "bilibili",
-                        ],
-                        "facet_ids": ["facet_second"],
-                    }
-                ],
+                "platform_branches": branches("second", "第二段", "facet_second"),
             },
         ],
     }
@@ -83,7 +78,7 @@ def test_bundled_contract_schemas_match_authoritative_pydantic_models() -> None:
         )
     ) == schemas["collection_input"]
     assert json.loads(
-        (CONTRACT_REFERENCES / "schemas" / "query-plans-2.0.schema.json").read_text(
+        (CONTRACT_REFERENCES / "schemas" / "query-plans-3.0.schema.json").read_text(
             encoding="utf-8"
         )
     ) == schemas["query_plans"]
@@ -96,7 +91,7 @@ def test_bundled_minimal_examples_normalize_with_authoritative_models() -> None:
         )
     )
     query_plans = json.loads(
-        (CONTRACT_REFERENCES / "examples" / "query-plans-2.0.min.json").read_text(
+        (CONTRACT_REFERENCES / "examples" / "query-plans-3.0.min.json").read_text(
             encoding="utf-8"
         )
     )
@@ -104,7 +99,7 @@ def test_bundled_minimal_examples_normalize_with_authoritative_models() -> None:
     normalized = normalize_contracts(collection, query_plans)
 
     assert normalized.collection_input.schema_version == "1.0"
-    assert normalized.query_plans.schema_version == "2.0"
+    assert normalized.query_plans.schema_version == "3.0"
     assert normalized.query_plans.platform_scope == ("bilibili",)
 
 
@@ -121,8 +116,9 @@ def test_contracts_generate_ids_and_canonicalize_order() -> None:
     ]
     assert contracts.query_plans.plans[0].query_plan_id == "qp_seg_002"
     query = contracts.query_plans.plans[0].initial_queries[0]
-    assert query.text == "第一段 素材"
-    assert query.target_platforms == ("bilibili", "douyin", "xiaohongshu")
+    assert query.text == "第一段 bilibili 素材"
+    assert query.platform == "bilibili"
+    assert query.target_platforms == ("bilibili",)
     assert contracts.warnings == ()
 
 
@@ -151,9 +147,9 @@ def test_platform_scope_must_be_non_empty_and_unique(
         normalize_contracts(collection_document(), plans)
 
 
-def test_every_query_must_target_the_complete_platform_scope() -> None:
+def test_every_plan_must_cover_the_complete_platform_scope() -> None:
     plans = query_plan_document()
-    plans["plans"][0]["initial_queries"][0]["target_platforms"] = ["bilibili"]
+    plans["plans"][0]["platform_branches"].pop()
 
     with pytest.raises(ContractError) as captured:
         normalize_contracts(collection_document(), plans)
@@ -163,7 +159,18 @@ def test_every_query_must_target_the_complete_platform_scope() -> None:
         "douyin",
         "xiaohongshu",
     )
-    assert captured.value.details["target_platforms"] == ("bilibili",)
+    assert captured.value.details["branch_platforms"] == ("bilibili", "douyin")
+
+
+def test_query_plans_v2_is_explicitly_rejected() -> None:
+    plans = query_plan_document()
+    plans["schema_version"] = "2.0"
+
+    with pytest.raises(ContractVersionError) as captured:
+        normalize_contracts(collection_document(), plans)
+
+    assert captured.value.code == "contract_version_unsupported"
+    assert captured.value.details["supported_versions"] == ["3.0"]
 
 
 def test_every_segment_requires_exactly_one_query_plan() -> None:

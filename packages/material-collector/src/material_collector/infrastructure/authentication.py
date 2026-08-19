@@ -41,7 +41,13 @@ from material_collector.core.media import (
     AuthProbe,
     AuthStatus,
     BrowserChannel,
+    NetworkRoute,
     Platform,
+)
+from material_collector.infrastructure.networking import (
+    ForeignProxy,
+    browser_proxy,
+    platform_route,
 )
 from material_collector.infrastructure.platforms.rendered_access import (
     RenderedAccessState,
@@ -169,6 +175,15 @@ class BrowserNavigationError(BrowserLifecycleError):
             "navigation",
             "browser_navigation_failed",
             "check_network_and_retry",
+        )
+
+
+class BrowserNetworkUnavailableError(BrowserLifecycleError):
+    def __init__(self) -> None:
+        super().__init__(
+            "network",
+            "foreign_proxy_required",
+            "configure_and_validate_foreign_proxy",
         )
 
 
@@ -316,6 +331,7 @@ class PlaywrightAuthenticationGateway:
         now: Callable[[], datetime] | None = None,
         lock_wait_seconds: float = _LOCK_WAIT_SECONDS,
         native_windows: bool | None = None,
+        foreign_proxy: ForeignProxy | None = None,
     ) -> None:
         self._root_dir = _resolve_auth_root(root_dir)
         if driver is not None and driver_factory is not None:
@@ -326,7 +342,8 @@ class PlaywrightAuthenticationGateway:
             self._driver_factory = lambda _channel: driver
         else:
             self._driver_factory = lambda channel: PlaywrightBrowserAuthenticationDriver(
-                channel=channel
+                channel=channel,
+                foreign_proxy=foreign_proxy,
             )
         self._now = now or (lambda: datetime.now(UTC))
         self._lock_wait_seconds = lock_wait_seconds
@@ -607,6 +624,8 @@ class PlaywrightBrowserAuthenticationDriver:
         Platform.BILIBILI: "https://www.bilibili.com/",
         Platform.DOUYIN: "https://www.douyin.com/",
         Platform.XIAOHONGSHU: "https://www.xiaohongshu.com/",
+        Platform.YOUTUBE: "https://www.youtube.com/",
+        Platform.TIKTOK: "https://www.tiktok.com/",
     }
 
     def __init__(
@@ -615,6 +634,7 @@ class PlaywrightBrowserAuthenticationDriver:
         channel: BrowserChannel = BrowserChannel.CHROME,
         desktop_verifier: Callable[[Path, datetime], bool] | None = None,
         desktop_available: Callable[[], bool] | None = None,
+        foreign_proxy: ForeignProxy | None = None,
     ) -> None:
         self._channel = _explicit_channel(channel)
         self._desktop_verifier = (
@@ -625,23 +645,42 @@ class PlaywrightBrowserAuthenticationDriver:
             if desktop_verifier is None
             else lambda: True
         )
+        self._foreign_proxy = foreign_proxy
+
+    def _launch_options(
+        self,
+        platform: Platform,
+        user_data_dir: Path,
+        *,
+        headless: bool,
+    ) -> dict[str, Any]:
+        options: dict[str, Any] = {
+            "user_data_dir": str(user_data_dir),
+            "channel": _PLAYWRIGHT_CHANNEL[self._channel],
+            "headless": headless,
+            "chromium_sandbox": True,
+            "service_workers": "block",
+        }
+        if platform_route(platform) is NetworkRoute.FOREIGN_PROXY:
+            if self._foreign_proxy is None:
+                raise BrowserNetworkUnavailableError
+            options["proxy"] = browser_proxy(self._foreign_proxy)
+            options["args"] = []
+        else:
+            options["args"] = ["--no-proxy-server"]
+        return options
 
     async def probe(self, platform: Platform, user_data_dir: Path) -> DriverProbe:
         try:
             async with async_playwright() as playwright:
                 try:
                     context = await playwright.chromium.launch_persistent_context(
-                        str(user_data_dir),
-                        channel=_PLAYWRIGHT_CHANNEL[self._channel],
-                        headless=True,
-                        chromium_sandbox=True,
-                        service_workers="block",
-                        args=["--no-proxy-server"],
+                        **self._launch_options(platform, user_data_dir, headless=True)
                     )
                 except PlaywrightError as error:
                     raise _playwright_launch_error(error) from error
                 try:
-                    if platform in {Platform.DOUYIN, Platform.XIAOHONGSHU}:
+                    if platform is not Platform.BILIBILI:
                         page = await _fresh_context_page(context)
                         try:
                             await page.goto(
@@ -673,12 +712,7 @@ class PlaywrightBrowserAuthenticationDriver:
                 launch_started_at = datetime.now(UTC)
                 try:
                     context = await playwright.chromium.launch_persistent_context(
-                        str(user_data_dir),
-                        channel=_PLAYWRIGHT_CHANNEL[self._channel],
-                        headless=False,
-                        chromium_sandbox=True,
-                        service_workers="block",
-                        args=["--no-proxy-server"],
+                        **self._launch_options(platform, user_data_dir, headless=False)
                     )
                 except PlaywrightError as error:
                     raise _playwright_launch_error(error) from error
@@ -765,7 +799,17 @@ class PlaywrightBrowserAuthenticationDriver:
             return await _probe_bilibili(context.request)
         if platform is Platform.DOUYIN:
             return await _probe_douyin(context)
-        return await _probe_xiaohongshu(context)
+        if platform is Platform.XIAOHONGSHU:
+            return await _probe_xiaohongshu(context)
+        if platform is Platform.YOUTUBE:
+            return await _probe_cookie_names(
+                context,
+                {"SAPISID", "__Secure-3PAPISID", "__Secure-1PAPISID"},
+            )
+        return await _probe_cookie_names(
+            context,
+            {"sessionid", "sessionid_ss", "sid_guard"},
+        )
 
 
 class _ProcessFileLock:
@@ -863,6 +907,22 @@ async def _probe_bilibili(request: APIRequestContext) -> DriverProbe:
     except PlaywrightError, ValueError, TypeError:
         pass
     return DriverProbe(AuthStatus.PROBE_FAILED, "unrecognized_probe_response")
+
+
+async def _probe_cookie_names(
+    context: BrowserContext,
+    accepted_names: set[str],
+) -> DriverProbe:
+    """Conservatively recognize long-lived foreign login cookies in-place."""
+
+    try:
+        cookies = await context.cookies()
+    except PlaywrightError:
+        return DriverProbe(AuthStatus.PROBE_FAILED, "cookie_probe_failed")
+    names = {str(cookie.get("name", "")) for cookie in cookies}
+    if names.intersection(accepted_names):
+        return DriverProbe(AuthStatus.VALID, "platform_login_cookie_present")
+    return DriverProbe(AuthStatus.INVALID, "platform_reports_logged_out")
 
 
 async def _probe_douyin(context: BrowserContext) -> DriverProbe:

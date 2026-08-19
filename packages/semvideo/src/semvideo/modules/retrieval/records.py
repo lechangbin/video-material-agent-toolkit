@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +10,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+
 from semvideo.infrastructure.io import atomic_write_bytes
 
 
@@ -77,7 +77,7 @@ class RetrievalSegmentRecord(BaseModel):
         return value
 
     @model_validator(mode="after")
-    def validate_time_range(self) -> "RetrievalSegmentRecord":
+    def validate_time_range(self) -> RetrievalSegmentRecord:
         if self.end_ms <= self.start_ms:
             raise ValueError("end_ms must be greater than start_ms")
         if self.duration_ms != self.end_ms - self.start_ms:

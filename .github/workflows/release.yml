@@ -32,6 +32,14 @@ jobs:
           Set-Location packages/semvideo
           python -m pip install -e ".[dev]"
           python -m pytest -q
+      - name: Test media-conformance
+        shell: pwsh
+        run: |
+          Set-Location packages/media-conformance
+          uv sync
+          uv run pytest
+          uv run ruff check .
+          uv run mypy src
       - name: Build wheels
         shell: pwsh
         run: .\scripts\build-release.ps1

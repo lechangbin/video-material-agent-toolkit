@@ -58,7 +58,7 @@ def _semantic_contracts(
     _write_json(
         plans_path,
         {
-            "schema_version": "2.0",
+            "schema_version": "3.0",
             "platform_scope": list(platform_scope),
             "plans": [
                 {
@@ -68,13 +68,18 @@ def _semantic_contracts(
                     "required_visual_facets": [
                         {"facet_id": "facet_city", "description": "城市清晨"}
                     ],
-                    "initial_queries": [
+                    "platform_branches": [
                         {
-                            "query_id": "q_city",
-                            "text": "城市 清晨 航拍",
-                            "target_platforms": list(platform_scope),
-                            "facet_ids": ["facet_city"],
+                            "platform": platform,
+                            "language": "zh-CN" if platform not in {"youtube", "tiktok"} else "en",
+                            "queries": [{
+                                "query_id": f"q_city_{platform}",
+                                "text": "城市 清晨 航拍" if platform not in {"youtube", "tiktok"} else "city morning aerial",
+                                "facet_ids": ["facet_city"],
+                                "budget": 20,
+                            }],
                         }
+                        for platform in platform_scope
                     ],
                 },
                 {
@@ -84,13 +89,18 @@ def _semantic_contracts(
                     "required_visual_facets": [
                         {"facet_id": "facet_people", "description": "通勤人群"}
                     ],
-                    "initial_queries": [
+                    "platform_branches": [
                         {
-                            "query_id": "q_people",
-                            "text": "早高峰 通勤 人群",
-                            "target_platforms": list(platform_scope),
-                            "facet_ids": ["facet_people"],
+                            "platform": platform,
+                            "language": "zh-CN" if platform not in {"youtube", "tiktok"} else "en",
+                            "queries": [{
+                                "query_id": f"q_people_{platform}",
+                                "text": "早高峰 通勤 人群" if platform not in {"youtube", "tiktok"} else "rush hour commuters",
+                                "facet_ids": ["facet_people"],
+                                "budget": 20,
+                            }],
                         }
+                        for platform in platform_scope
                     ],
                 },
             ],
@@ -191,7 +201,11 @@ def test_workflow_initialization_and_gap_round_preserve_budget(
         "query_plan_id": "qp_seg_001",
         "round_number": 1,
         "status": "insufficient",
-        "previous_query_texts": ["城市 清晨 航拍"],
+        "previous_query_texts": [
+            "bilibili:城市 清晨 航拍",
+            "douyin:城市 清晨 航拍",
+            "xiaohongshu:城市 清晨 航拍",
+        ],
         "evidence": _selection_evidence(tmp_path, workflow),
         "facet_assessment": [
             {
@@ -209,15 +223,14 @@ def test_workflow_initialization_and_gap_round_preserve_budget(
         ],
         "next_queries": [
             {
-                "query_id": "q_city_round_002_01",
+                "query_id": f"q_city_round_002_{platform}",
                 "text": "城市 清晨 街道 近景",
-                "target_platforms": [
-                    "xiaohongshu",
-                    "douyin",
-                    "bilibili",
-                ],
+                "platform": platform,
+                "language": "zh-CN",
                 "facet_ids": ["facet_city"],
+                "budget": 20,
             }
+            for platform in ("bilibili", "douyin", "xiaohongshu")
         ],
     }
     batch = {
@@ -243,8 +256,9 @@ def test_workflow_initialization_and_gap_round_preserve_budget(
         "MaxRounds": 2,
         "MaxVideos": 12,
     }
-    assert refined_plans["plans"][0]["initial_queries"][0][
-        "target_platforms"
+    assert [
+        branch["platform"]
+        for branch in refined_plans["plans"][0]["platform_branches"]
     ] == ["bilibili", "douyin", "xiaohongshu"]
     mismatched_batch = {**batch, "platform_scope": ["bilibili"]}
     with pytest.raises(round_module.RoundPlanError, match="batch platform scope"):
@@ -286,11 +300,9 @@ def test_workflow_and_initial_round_freeze_a_bilibili_only_scope(
     )
 
     assert workflow["platform_scope"] == ["bilibili"]
-    assert round_plans["schema_version"] == "2.0"
+    assert round_plans["schema_version"] == "3.0"
     assert round_plans["platform_scope"] == ["bilibili"]
-    assert round_plans["plans"][0]["initial_queries"][0]["target_platforms"] == [
-        "bilibili"
-    ]
+    assert round_plans["plans"][0]["platform_branches"][0]["platform"] == "bilibili"
 
 
 def test_gap_round_cannot_broaden_a_bilibili_only_scope(
@@ -327,7 +339,7 @@ def test_gap_round_cannot_broaden_a_bilibili_only_scope(
         "query_plan_id": "qp_seg_001",
         "round_number": 1,
         "status": "insufficient",
-        "previous_query_texts": ["城市 清晨 航拍"],
+        "previous_query_texts": ["bilibili:城市 清晨 航拍"],
         "evidence": _selection_evidence(tmp_path, workflow),
         "facet_assessment": [
             {
@@ -347,8 +359,10 @@ def test_gap_round_cannot_broaden_a_bilibili_only_scope(
             {
                 "query_id": "q_scope_escape",
                 "text": "城市 清晨 街道 近景",
-                "target_platforms": ["bilibili", "douyin"],
+                "platform": "douyin",
+                "language": "zh-CN",
                 "facet_ids": ["facet_city"],
+                "budget": 20,
             }
         ],
     }
@@ -362,7 +376,7 @@ def test_gap_round_cannot_broaden_a_bilibili_only_scope(
         "budget": {"occupied_media_unit_count": 6},
     }
 
-    with pytest.raises(round_module.RoundPlanError, match="platform scope"):
+    with pytest.raises(round_module.RoundPlanError, match="in-scope platform"):
         round_module.plan_round(
             workflow=workflow,
             segment_id="seg_001",
@@ -484,7 +498,7 @@ def test_in_process_workflow_reports_old_queryplans_as_version_incompatible(
     assert raised.value.details == {
         "document": "query_plans",
         "received_version": "1.0",
-        "supported_versions": ["2.0"],
+            "supported_versions": ["3.0"],
     }
 
 
@@ -530,7 +544,7 @@ def test_workflow_cli_preserves_external_contract_version_error(
     assert payload["details"] == {
         "document": "query_plans",
         "received_version": "1.0",
-        "supported_versions": ["2.0"],
+            "supported_versions": ["3.0"],
     }
 
 
@@ -585,7 +599,7 @@ def test_round_cli_reports_frozen_old_queryplans_as_version_incompatible(
     assert payload["details"] == {
         "document": "query_plans",
         "received_version": "1.0",
-        "supported_versions": ["2.0"],
+            "supported_versions": ["3.0"],
     }
 
 
@@ -605,44 +619,26 @@ def test_round_history_reports_old_queryplans_as_version_incompatible() -> None:
     assert raised.value.details == {
         "document": "query_plans",
         "received_version": "1.0",
-        "supported_versions": ["2.0"],
+        "supported_versions": ["3.0"],
     }
 
 
-def test_workflow_requires_every_expression_to_target_the_complete_scope(
+def test_workflow_requires_one_branch_for_every_platform_in_scope(
     tmp_path: Path,
 ) -> None:
     module = _load_script("init_workflow")
     input_path, plans_path = _semantic_contracts(tmp_path)
     plans = json.loads(plans_path.read_text(encoding="utf-8"))
-    query = plans["plans"][0]["initial_queries"][0]
-    plans["plans"][0]["initial_queries"] = [
-        {
-            **query,
-            "query_id": "q_bili",
-            "text": f"{query['text']} B站",
-            "target_platforms": ["bilibili"],
-        },
-        {
-            **query,
-            "query_id": "q_douyin",
-            "text": f"{query['text']} 抖音",
-            "target_platforms": ["douyin"],
-        },
-        {
-            **query,
-            "query_id": "q_xiaohongshu",
-            "text": f"{query['text']} 小红书",
-            "target_platforms": ["xiaohongshu"],
-        },
-    ]
+    plans["plans"][0]["platform_branches"] = plans["plans"][0][
+        "platform_branches"
+    ][:-1]
     _write_json(plans_path, plans)
     material_workspace = tmp_path / "materials"
     semvideo_workspace = tmp_path / "semvideo"
     material_workspace.mkdir()
     semvideo_workspace.mkdir()
 
-    with pytest.raises(module.WorkflowInitError, match="complete collection platform scope"):
+    with pytest.raises(module.WorkflowInitError):
         module.initialize(
             input_path=input_path,
             query_plans_path=plans_path,
@@ -706,7 +702,11 @@ def test_gap_round_rejects_a_query_used_in_an_earlier_round(tmp_path: Path) -> N
         "query_plan_id": "qp_seg_001",
         "round_number": 1,
         "status": "insufficient",
-        "previous_query_texts": ["城市 清晨 航拍"],
+        "previous_query_texts": [
+            "bilibili:城市 清晨 航拍",
+            "douyin:城市 清晨 航拍",
+            "xiaohongshu:城市 清晨 航拍",
+        ],
         "evidence": _selection_evidence(tmp_path, workflow),
         "facet_assessment": [
             {
@@ -724,15 +724,14 @@ def test_gap_round_rejects_a_query_used_in_an_earlier_round(tmp_path: Path) -> N
         ],
         "next_queries": [
             {
-                "query_id": "q_duplicate",
+                "query_id": f"q_duplicate_{platform}",
                 "text": " 城市  清晨 航拍 ",
-                "target_platforms": [
-                    "bilibili",
-                    "douyin",
-                    "xiaohongshu",
-                ],
+                "platform": platform,
+                "language": "zh-CN",
                 "facet_ids": ["facet_city"],
+                "budget": 20,
             }
+            for platform in ("bilibili", "douyin", "xiaohongshu")
         ],
     }
     batch = {

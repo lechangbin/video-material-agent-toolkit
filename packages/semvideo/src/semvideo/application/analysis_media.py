@@ -10,9 +10,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable
 
 from semvideo.adapters.ffmpeg import MediaFacts
 from semvideo.application.locking import application_file_lock

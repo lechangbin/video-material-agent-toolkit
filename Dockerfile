@@ -43,6 +43,7 @@ RUN useradd --create-home --home-dir /home/toolkit --uid 10001 toolkit \
 WORKDIR /opt/toolkit
 COPY packages/material-collector ./packages/material-collector
 COPY packages/semvideo ./packages/semvideo
+COPY packages/media-conformance ./packages/media-conformance
 RUN find packages -type d -exec chmod 0755 {} + \
     && find packages -type f -exec chmod 0644 {} +
 
@@ -53,9 +54,14 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     && python -m venv /opt/venvs/semvideo \
     && /opt/venvs/semvideo/bin/python -m pip install \
         ./packages/semvideo \
+    && python -m venv /opt/venvs/media-conformance \
+    && /opt/venvs/media-conformance/bin/python -m pip install \
+        ./packages/media-conformance \
     && ln -s /opt/venvs/material-collector/bin/material-collector \
         /usr/local/bin/material-collector \
-    && ln -s /opt/venvs/semvideo/bin/semvideo /usr/local/bin/semvideo
+    && ln -s /opt/venvs/semvideo/bin/semvideo /usr/local/bin/semvideo \
+    && ln -s /opt/venvs/media-conformance/bin/media-conformance \
+        /usr/local/bin/media-conformance
 
 COPY skills ./skills
 COPY LICENSE README.md SECURITY.md SOURCE_COMMITS.md ./

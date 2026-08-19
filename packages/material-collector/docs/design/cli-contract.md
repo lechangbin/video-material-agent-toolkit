@@ -44,7 +44,7 @@ material-collector contracts schema
 ```json
 {
   "schema_version": "material-collector-version/v1",
-  "cli_version": "0.2.1",
+  "cli_version": "0.3.0",
   "skill_protocol_version": 1,
   "collection_input_schema": {"min": "1.0", "max": "1.0"},
   "query_plans_schema": {"min": "2.0", "max": "2.0"}

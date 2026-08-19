@@ -14,7 +14,7 @@ from typing import Any
 BATCH_SCHEMA = "video-material-understanding-batch/v2"
 COLLECTION_SCHEMA = "2.0"
 WORKFLOW_SCHEMA = "video-material-workflow/v1"
-PLATFORMS = ("bilibili", "douyin", "xiaohongshu")
+PLATFORMS = ("bilibili", "douyin", "xiaohongshu", "youtube", "tiktok")
 
 
 class BatchError(RuntimeError):

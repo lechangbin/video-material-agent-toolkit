@@ -4,10 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "semvideo"
-version = "0.1.4"
+version = "0.2.0"
 description = "Agent-first local video understanding and semantic segmentation CLI."
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 requires-python = ">=3.14.6,<3.15"
 dependencies = [
   "faster-whisper==1.2.1",
@@ -20,7 +21,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "mypy>=1.19,<2",
   "pytest>=8.4,<9",
+  "ruff>=0.14,<1",
 ]
 prototype = [
   "claude-real-video[fast]==0.7.16",

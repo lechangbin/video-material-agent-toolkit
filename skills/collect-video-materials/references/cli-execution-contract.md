@@ -9,8 +9,8 @@ python <skill-root>/scripts/resolve_material_collector.py
 ```
 
 On Windows, `py -3.14` may replace `python` when it is the configured launcher. A successful
-result has `ok=true`, an absolute `command`, `cli_version=0.2.1`,
-`skill_protocol_version=1`, Collection input range 1.0..1.0, and QueryPlans range 2.0..2.0.
+result has `ok=true`, an absolute `command`, `cli_version=0.3.0`,
+`skill_protocol_version=1`, Collection input range 1.0..1.0, and QueryPlans range 3.0..3.0.
 Use that one `command` value for the rest of the task. The resolver owns the bounded candidate
 list and protocol check; the Agent must not add PATH scans, source inspection, trial commands, or
 alternate executables. Exit 3 is not found and exit 4 is incompatible; report the emitted recovery
@@ -102,7 +102,7 @@ They define the per-session Collector constraints. A downstream orchestration
 workflow may pass remaining budgets for one theme segment, but QueryPlan content
 must never carry these values.
 
-`QueryPlansPath` must point to QueryPlans 2.0. Its top-level `platform_scope` is the
+`QueryPlansPath` must point to QueryPlans 3.0. Its top-level `platform_scope` is the
 frozen collection boundary, and every initial or supplemental expression must use
 that complete scope. The runner and Collector must not authenticate or search a
 platform outside it.

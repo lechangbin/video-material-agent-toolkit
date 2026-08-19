@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import ctypes
 import os
+from collections.abc import Callable
 from ctypes import wintypes
 from datetime import UTC, datetime
+from typing import cast
 
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _WINDOWS_EPOCH_OFFSET_SECONDS = 11_644_473_600
@@ -67,7 +69,8 @@ def _linux_process_started_at(pid: int) -> str:
         if stat_fields[2] == "Z":
             raise ProcessLookupFailure(f"process {pid} is a zombie")
         start_ticks = int(stat_fields[21])
-        clock_ticks = os.sysconf("SC_CLK_TCK")
+        sysconf = cast(Callable[[str], int], os.__dict__["sysconf"])
+        clock_ticks = sysconf("SC_CLK_TCK")
         with open("/proc/stat", encoding="ascii") as stream:
             boot_line = next(line for line in stream if line.startswith("btime "))
         boot_time = int(boot_line.split()[1])
