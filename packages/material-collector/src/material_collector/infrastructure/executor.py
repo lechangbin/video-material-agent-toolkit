@@ -267,15 +267,19 @@ class CollectionExecutor:
             control["collector_process_start_ticks"] = handshake.get("process_start_ticks")
             _write_json(control_path, control)
 
-            time.sleep(0.5)
-            if wrapper.poll() is not None or not _process_alive(handshake["process_id"]):
-                control["status"] = "exited"
-                _write_json(control_path, control)
-                raise ExecutorFailure(
-                    "collector_exited_during_start",
-                    "The material collector exited during startup stabilization.",
-                    context={"execution": control},
-                )
+            stabilization_deadline = time.monotonic() + 1.0
+            while time.monotonic() < stabilization_deadline:
+                if wrapper.poll() is not None or not _process_alive(
+                    handshake["process_id"]
+                ):
+                    control["status"] = "exited"
+                    _write_json(control_path, control)
+                    raise ExecutorFailure(
+                        "collector_exited_during_start",
+                        "The material collector exited during startup stabilization.",
+                        context={"execution": control},
+                    )
+                time.sleep(0.025)
 
             resolved_session_id = session_id
             if operation == "run":
