@@ -9,6 +9,7 @@ import pytest
 from material_collector.infrastructure.media_inspection import (
     FingerprintStatus,
     LocalMediaFingerprintService,
+    MediaInspectionError,
     compare_fingerprints,
     fingerprint_media,
     inspect_media,
@@ -119,6 +120,38 @@ def test_probe_returns_duration_dimensions_and_container(
     assert "mp4" in probe.container
     assert probe.video_stream_count == 1
     assert probe.audio_stream_count == 1
+
+
+def test_probe_rejects_faststart_media_truncated_after_readable_header(
+    tmp_path: Path,
+) -> None:
+    complete = tmp_path / "complete-faststart.mp4"
+    truncated = tmp_path / "truncated-faststart.mp4"
+    _ffmpeg(
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=size=128x96:rate=10:duration=8",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=440:sample_rate=44100:duration=8",
+        "-shortest",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-c:a",
+        "aac",
+        "-movflags",
+        "+faststart",
+        str(complete),
+    )
+    payload = complete.read_bytes()
+    truncated.write_bytes(payload[: len(payload) * 3 // 4])
+
+    with pytest.raises(MediaInspectionError, match="decod"):
+        inspect_media(truncated)
 
 
 def test_same_content_survives_container_and_codec_transcode(
