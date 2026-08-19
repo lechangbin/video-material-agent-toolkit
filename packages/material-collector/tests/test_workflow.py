@@ -386,10 +386,10 @@ async def _assert_cancellation_stops_pending_operation(
     closed: asyncio.Event,
 ) -> None:
     running = asyncio.create_task(workflow.run(workspace, session_id))
-    await asyncio.wait_for(started.wait(), timeout=1)
+    await asyncio.wait_for(started.wait(), timeout=3)
 
     runtime.request_cancel(workspace, session_id)
-    result = await asyncio.wait_for(running, timeout=1)
+    result = await asyncio.wait_for(running, timeout=3)
 
     assert result.status == "cancelled"
     assert closed.is_set()

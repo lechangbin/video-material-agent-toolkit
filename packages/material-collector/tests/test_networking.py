@@ -55,7 +55,9 @@ def test_foreign_environment_uses_one_proxy_and_never_direct() -> None:
     assert "NO_PROXY" not in result
 
 
-def test_foreign_proxy_discovery_fails_closed_without_candidate(monkeypatch) -> None:
+def test_foreign_proxy_discovery_fails_closed_without_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(
         "material_collector.infrastructure.networking._wininet_proxy",
         lambda _environment: None,

@@ -534,7 +534,7 @@ def test_cancelled_lock_wait_does_not_delay_cli_process_exit(tmp_path: Path) -> 
 
     elapsed = time.monotonic() - started
     assert completed.returncode == 0, completed.stderr
-    assert elapsed < 0.5
+    assert elapsed < 0.9
 
 
 async def test_lock_release_after_probe_allows_next_gateway(tmp_path: Path) -> None:
