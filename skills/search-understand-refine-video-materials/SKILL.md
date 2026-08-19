@@ -104,9 +104,16 @@ Repeat the following bounded loop:
    current theme segment, required visual facets, and selected Top-K. Write the
    versioned gap decision defined in the workflow contract. Selection-stage
    coverage is evidence, not the final decision.
-8. **Conform selected ranges.** After final Top-K selection and high-quality retrieval, create one
-   `editing-media-conformance-request/v1` from the selected half-open source ranges and invoke only
-   `media-conformance prepare --request <path>`. Continue only when its Assembly Set reports both
+8. **Conform selected ranges.** After final Top-K selection and high-quality retrieval, build the
+   versioned request for each selected source asset with
+   `scripts/prepare_conformance_request.py`, giving it the frozen workflow, the
+   selected Top-K result, a `selected-source-ranges/v1` ranges document with half-open
+   ranges over one immutable high-quality source, and an absolute output directory.
+   The bridge hashes the source asset, derives deterministic request and idempotency
+   keys from the workflow/selection/ranges lineage, and emits one
+   `editing-media-conformance-request/v1` matching the bundled schema and example.
+   Invoke only `media-conformance prepare --request <path>` with the returned command.
+   Continue only when its Assembly Set reports both
    `compatible=true` and `packet_concat_verified=true`; preserve a structured failure and stop
    before concat otherwise.
 9. **Stop or refine.** If sufficient, complete the theme segment. If insufficient

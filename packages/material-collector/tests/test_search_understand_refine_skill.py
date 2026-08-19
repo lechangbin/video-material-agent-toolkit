@@ -1293,6 +1293,66 @@ def test_understanding_jobs_carry_forward_only_matching_batch_identity() -> None
         module.merge_jobs(batch=batch, job_artifacts=[mismatched])
 
 
+def test_understanding_job_preserves_subagent_lineage_across_rounds() -> None:
+    module = _load_script("record_understanding_job")
+    batch = {
+        "schema_version": "video-material-understanding-batch/v2",
+        "platform_scope": ["bilibili"],
+        "items": [
+            {
+                "item_id": "proxy_1",
+                "asset_sha256": "a" * 64,
+                "semvideo_profile": "default",
+                "semvideo_idempotency_key": "material-proxy-v1-test",
+            }
+        ],
+    }
+    lineage = {
+        "context_tier": "256k",
+        "crv_version": "1.2.3",
+        "crv_package_hash": "d" * 64,
+        "attempt": 1,
+        "import_hash": "e" * 64,
+        "validation": "passed",
+    }
+
+    recorded = module.record_job(
+        batch=batch,
+        jobs=None,
+        item_id="proxy_1",
+        response={"job_id": "job_1", "state": "completed"},
+        response_hash="b" * 64,
+        lineage=lineage,
+    )
+
+    assert recorded["items"][0]["lineage"] == lineage
+
+    carried = module.merge_jobs(batch=batch, job_artifacts=[recorded])
+
+    assert carried["items"][0]["lineage"] == lineage
+
+    repeated = module.record_job(
+        batch=batch,
+        jobs=recorded,
+        item_id="proxy_1",
+        response={"job_id": "job_1", "state": "completed"},
+        response_hash="b" * 64,
+        lineage=lineage,
+    )
+
+    assert repeated == recorded
+
+    with pytest.raises(module.JobRecordError, match="lineage must be an object"):
+        module.record_job(
+            batch=batch,
+            jobs=None,
+            item_id="proxy_1",
+            response={"job_id": "job_1", "state": "completed"},
+            response_hash="b" * 64,
+            lineage="not-an-object",
+        )
+
+
 def test_selection_request_rejects_catalog_candidate_hash_mismatch(
     tmp_path: Path,
 ) -> None:

@@ -1,0 +1,127 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "editing-delivery-profile/v1",
+      "default": "editing-delivery-profile/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "container": {
+      "const": "mp4",
+      "default": "mp4",
+      "title": "Container",
+      "type": "string"
+    },
+    "video_codec": {
+      "const": "h264",
+      "default": "h264",
+      "title": "Video Codec",
+      "type": "string"
+    },
+    "video_encoder": {
+      "const": "libx264",
+      "default": "libx264",
+      "title": "Video Encoder",
+      "type": "string"
+    },
+    "video_profile": {
+      "const": "high",
+      "default": "high",
+      "title": "Video Profile",
+      "type": "string"
+    },
+    "pixel_format": {
+      "const": "yuv420p",
+      "default": "yuv420p",
+      "title": "Pixel Format",
+      "type": "string"
+    },
+    "width": {
+      "const": 1920,
+      "default": 1920,
+      "title": "Width",
+      "type": "integer"
+    },
+    "height": {
+      "const": 1080,
+      "default": 1080,
+      "title": "Height",
+      "type": "integer"
+    },
+    "sample_aspect_ratio": {
+      "const": "1:1",
+      "default": "1:1",
+      "title": "Sample Aspect Ratio",
+      "type": "string"
+    },
+    "frame_rate": {
+      "const": "30/1",
+      "default": "30/1",
+      "title": "Frame Rate",
+      "type": "string"
+    },
+    "gop_frames": {
+      "const": 60,
+      "default": 60,
+      "title": "Gop Frames",
+      "type": "integer"
+    },
+    "video_track_time_scale": {
+      "const": 90000,
+      "default": 90000,
+      "title": "Video Track Time Scale",
+      "type": "integer"
+    },
+    "color_primaries": {
+      "const": "bt709",
+      "default": "bt709",
+      "title": "Color Primaries",
+      "type": "string"
+    },
+    "color_transfer": {
+      "const": "bt709",
+      "default": "bt709",
+      "title": "Color Transfer",
+      "type": "string"
+    },
+    "color_space": {
+      "const": "bt709",
+      "default": "bt709",
+      "title": "Color Space",
+      "type": "string"
+    },
+    "audio_codec": {
+      "const": "aac",
+      "default": "aac",
+      "title": "Audio Codec",
+      "type": "string"
+    },
+    "audio_profile": {
+      "const": "LC",
+      "default": "LC",
+      "title": "Audio Profile",
+      "type": "string"
+    },
+    "audio_sample_rate": {
+      "const": 48000,
+      "default": 48000,
+      "title": "Audio Sample Rate",
+      "type": "integer"
+    },
+    "audio_channels": {
+      "const": 2,
+      "default": 2,
+      "title": "Audio Channels",
+      "type": "integer"
+    },
+    "audio_bit_rate": {
+      "const": 192000,
+      "default": 192000,
+      "title": "Audio Bit Rate",
+      "type": "integer"
+    }
+  },
+  "title": "EditingDeliveryProfile",
+  "type": "object"
+}

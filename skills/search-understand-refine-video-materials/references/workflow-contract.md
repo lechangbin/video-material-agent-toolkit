@@ -38,6 +38,10 @@ tool's authoritative state.
       selection-result.json
       selection-audit.jsonl
     gap-decision.json
+  conformance/
+    <request-id>.json
+    <request-id>.result.json
+  conformed/
 ```
 
 Use cumulative collection results from all completed rounds when rebuilding the
@@ -269,6 +273,45 @@ Repeat the identity flags when several sessions or jobs contributed. The state
 file is the recoverable per-segment summary; `workflow.json` remains the immutable
 definition. A terminal segment cannot be replaced with a conflicting result.
 `human_action_required` may later transition after the requested action.
+
+## Selected-range conformance
+
+After final Top-K selection and high-quality retrieval, one conformance request
+is built per immutable high-quality source asset. The ranges document is
+`selected-source-ranges/v1`:
+
+```json
+{
+  "schema_version": "selected-source-ranges/v1",
+  "asset_id": "hq_source_001",
+  "path": "C:/material-workspace/hq/hq_source_001.mp4",
+  "sha256": "optional-declared-sha256",
+  "ranges": [
+    {"clip_id": "clip_opening", "start_seconds": 1.5, "end_seconds": 4.5}
+  ]
+}
+```
+
+Build the request deterministically:
+
+```powershell
+python scripts/prepare_conformance_request.py `
+  --workflow <workflow-root>\workflow.json `
+  --selection-result <round-dir>\selection\selection-result.json `
+  --ranges <ranges.json> `
+  --output <workflow-root>\conformance\<request-id>.json `
+  --output-directory <workflow-root>\conformed
+```
+
+The bridge hashes the source asset, rejects declared-hash mismatches, non-half-open
+ranges, unsafe identifiers, relative paths, and conflicting existing requests, and
+emits one `editing-media-conformance-request/v1` that matches the bundled schema
+(`references/schemas/editing-media-conformance-request-v1.schema.json`) and minimal
+example. Run only the returned `media-conformance prepare --request <path>` command;
+its result is `editing-media-conformance-result/v1`. Continue only when the Assembly
+Set reports `compatible=true` and `packet_concat_verified=true`; otherwise preserve
+the structured failure and stop before concat. The bridge never constructs FFmpeg
+commands and never invents profiles.
 
 ## Recovery and stop rules
 

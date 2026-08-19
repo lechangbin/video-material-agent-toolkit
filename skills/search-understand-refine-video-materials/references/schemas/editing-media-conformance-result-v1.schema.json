@@ -1,0 +1,410 @@
+{
+  "$defs": {
+    "AssemblySetCompatibility": {
+      "additionalProperties": false,
+      "properties": {
+        "compatible": {
+          "title": "Compatible",
+          "type": "boolean"
+        },
+        "packet_concat_verified": {
+          "title": "Packet Concat Verified",
+          "type": "boolean"
+        },
+        "clip_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Clip Ids",
+          "type": "array"
+        },
+        "error_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Code"
+        }
+      },
+      "required": [
+        "compatible",
+        "packet_concat_verified",
+        "clip_ids"
+      ],
+      "title": "AssemblySetCompatibility",
+      "type": "object"
+    },
+    "ConformedClip": {
+      "additionalProperties": false,
+      "properties": {
+        "clip_id": {
+          "title": "Clip Id",
+          "type": "string"
+        },
+        "relative_path": {
+          "title": "Relative Path",
+          "type": "string"
+        },
+        "sha256": {
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size_bytes": {
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        },
+        "source_asset_id": {
+          "title": "Source Asset Id",
+          "type": "string"
+        },
+        "source_sha256": {
+          "title": "Source Sha256",
+          "type": "string"
+        },
+        "start_seconds": {
+          "title": "Start Seconds",
+          "type": "number"
+        },
+        "end_seconds": {
+          "title": "End Seconds",
+          "type": "number"
+        },
+        "ffmpeg_version": {
+          "title": "Ffmpeg Version",
+          "type": "string"
+        },
+        "effective_parameters_hash": {
+          "title": "Effective Parameters Hash",
+          "type": "string"
+        },
+        "video": {
+          "$ref": "#/$defs/MeasuredVideoStream"
+        },
+        "audio": {
+          "$ref": "#/$defs/MeasuredAudioStream"
+        },
+        "profile_valid": {
+          "title": "Profile Valid",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "clip_id",
+        "relative_path",
+        "sha256",
+        "size_bytes",
+        "source_asset_id",
+        "source_sha256",
+        "start_seconds",
+        "end_seconds",
+        "ffmpeg_version",
+        "effective_parameters_hash",
+        "video",
+        "audio",
+        "profile_valid"
+      ],
+      "title": "ConformedClip",
+      "type": "object"
+    },
+    "EditingDeliveryProfile": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "editing-delivery-profile/v1",
+          "default": "editing-delivery-profile/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "container": {
+          "const": "mp4",
+          "default": "mp4",
+          "title": "Container",
+          "type": "string"
+        },
+        "video_codec": {
+          "const": "h264",
+          "default": "h264",
+          "title": "Video Codec",
+          "type": "string"
+        },
+        "video_encoder": {
+          "const": "libx264",
+          "default": "libx264",
+          "title": "Video Encoder",
+          "type": "string"
+        },
+        "video_profile": {
+          "const": "high",
+          "default": "high",
+          "title": "Video Profile",
+          "type": "string"
+        },
+        "pixel_format": {
+          "const": "yuv420p",
+          "default": "yuv420p",
+          "title": "Pixel Format",
+          "type": "string"
+        },
+        "width": {
+          "const": 1920,
+          "default": 1920,
+          "title": "Width",
+          "type": "integer"
+        },
+        "height": {
+          "const": 1080,
+          "default": 1080,
+          "title": "Height",
+          "type": "integer"
+        },
+        "sample_aspect_ratio": {
+          "const": "1:1",
+          "default": "1:1",
+          "title": "Sample Aspect Ratio",
+          "type": "string"
+        },
+        "frame_rate": {
+          "const": "30/1",
+          "default": "30/1",
+          "title": "Frame Rate",
+          "type": "string"
+        },
+        "gop_frames": {
+          "const": 60,
+          "default": 60,
+          "title": "Gop Frames",
+          "type": "integer"
+        },
+        "video_track_time_scale": {
+          "const": 90000,
+          "default": 90000,
+          "title": "Video Track Time Scale",
+          "type": "integer"
+        },
+        "color_primaries": {
+          "const": "bt709",
+          "default": "bt709",
+          "title": "Color Primaries",
+          "type": "string"
+        },
+        "color_transfer": {
+          "const": "bt709",
+          "default": "bt709",
+          "title": "Color Transfer",
+          "type": "string"
+        },
+        "color_space": {
+          "const": "bt709",
+          "default": "bt709",
+          "title": "Color Space",
+          "type": "string"
+        },
+        "audio_codec": {
+          "const": "aac",
+          "default": "aac",
+          "title": "Audio Codec",
+          "type": "string"
+        },
+        "audio_profile": {
+          "const": "LC",
+          "default": "LC",
+          "title": "Audio Profile",
+          "type": "string"
+        },
+        "audio_sample_rate": {
+          "const": 48000,
+          "default": 48000,
+          "title": "Audio Sample Rate",
+          "type": "integer"
+        },
+        "audio_channels": {
+          "const": 2,
+          "default": 2,
+          "title": "Audio Channels",
+          "type": "integer"
+        },
+        "audio_bit_rate": {
+          "const": 192000,
+          "default": 192000,
+          "title": "Audio Bit Rate",
+          "type": "integer"
+        }
+      },
+      "title": "EditingDeliveryProfile",
+      "type": "object"
+    },
+    "MeasuredAudioStream": {
+      "additionalProperties": false,
+      "properties": {
+        "codec_name": {
+          "title": "Codec Name",
+          "type": "string"
+        },
+        "profile": {
+          "title": "Profile",
+          "type": "string"
+        },
+        "sample_rate": {
+          "title": "Sample Rate",
+          "type": "integer"
+        },
+        "channels": {
+          "title": "Channels",
+          "type": "integer"
+        },
+        "channel_layout": {
+          "title": "Channel Layout",
+          "type": "string"
+        }
+      },
+      "required": [
+        "codec_name",
+        "profile",
+        "sample_rate",
+        "channels",
+        "channel_layout"
+      ],
+      "title": "MeasuredAudioStream",
+      "type": "object"
+    },
+    "MeasuredVideoStream": {
+      "additionalProperties": false,
+      "properties": {
+        "codec_name": {
+          "title": "Codec Name",
+          "type": "string"
+        },
+        "profile": {
+          "title": "Profile",
+          "type": "string"
+        },
+        "pixel_format": {
+          "title": "Pixel Format",
+          "type": "string"
+        },
+        "width": {
+          "title": "Width",
+          "type": "integer"
+        },
+        "height": {
+          "title": "Height",
+          "type": "integer"
+        },
+        "sample_aspect_ratio": {
+          "title": "Sample Aspect Ratio",
+          "type": "string"
+        },
+        "frame_rate": {
+          "title": "Frame Rate",
+          "type": "string"
+        },
+        "time_base": {
+          "title": "Time Base",
+          "type": "string"
+        },
+        "color_primaries": {
+          "title": "Color Primaries",
+          "type": "string"
+        },
+        "color_transfer": {
+          "title": "Color Transfer",
+          "type": "string"
+        },
+        "color_space": {
+          "title": "Color Space",
+          "type": "string"
+        }
+      },
+      "required": [
+        "codec_name",
+        "profile",
+        "pixel_format",
+        "width",
+        "height",
+        "sample_aspect_ratio",
+        "frame_rate",
+        "time_base",
+        "color_primaries",
+        "color_transfer",
+        "color_space"
+      ],
+      "title": "MeasuredVideoStream",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "editing-media-conformance-result/v1",
+      "default": "editing-media-conformance-result/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "request_id": {
+      "title": "Request Id",
+      "type": "string"
+    },
+    "idempotency_key": {
+      "title": "Idempotency Key",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "completed",
+        "failed",
+        "cancelled"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "profile": {
+      "$ref": "#/$defs/EditingDeliveryProfile"
+    },
+    "clips": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ConformedClip"
+      },
+      "title": "Clips",
+      "type": "array"
+    },
+    "assembly_set": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AssemblySetCompatibility"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "error": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Error"
+    }
+  },
+  "required": [
+    "request_id",
+    "idempotency_key",
+    "status",
+    "profile"
+  ],
+  "title": "EditingMediaConformanceResult",
+  "type": "object"
+}
