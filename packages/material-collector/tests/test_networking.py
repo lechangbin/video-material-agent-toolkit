@@ -68,6 +68,17 @@ def test_foreign_proxy_discovery_fails_closed_without_candidate(
     assert captured.value.code == "foreign_proxy_required"
 
 
+def test_visible_browser_proxy_rejects_credentials_without_leaking_them() -> None:
+    with pytest.raises(CollectorError) as captured:
+        discover_foreign_proxy(
+            configured_proxy="http://alice:top-secret@127.0.0.1:7890",
+            validate_reachability=False,
+        )
+
+    assert captured.value.code == "foreign_proxy_invalid"
+    assert "top-secret" not in str(captured.value.details)
+
+
 def test_managed_runtime_freezes_active_version_and_checks_once_per_day(
     tmp_path: Path,
 ) -> None:

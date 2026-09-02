@@ -34,16 +34,38 @@ def _base_options(request: dict[str, Any]) -> dict[str, Any]:
         "allowed_extractors": [platform],
         "socket_timeout": int(request.get("timeout_seconds", 30)),
     }
-    profile = request.get("edge_profile")
+    profile = request.get("browser_profile")
     if profile:
-        options["cookiesfrombrowser"] = ("edge", str(profile), None, None)
+        channel = str(request.get("browser_channel", ""))
+        if channel not in {"edge", "chrome"}:
+            raise ValueError("browser_channel_invalid")
+        options["cookiesfrombrowser"] = (channel, str(profile), None, None)
     return options
+
+
+def _auth_probe(request: dict[str, Any]) -> dict[str, Any]:
+    import yt_dlp  # type: ignore[import-untyped]
+
+    platform = str(request["platform"])
+    required_cookie_names = {
+        "youtube": {"SAPISID", "__Secure-1PAPISID", "__Secure-3PAPISID"},
+        "tiktok": {"sessionid", "sessionid_ss", "sid_guard"},
+    }
+    if platform not in required_cookie_names:
+        raise ValueError("foreign_platform_unsupported")
+    with yt_dlp.YoutubeDL(_base_options(request)) as client:
+        cookie_names = {cookie.name for cookie in client.cookiejar}
+    return {
+        "operation": "auth_probe",
+        "platform": platform,
+        "authenticated": bool(cookie_names & required_cookie_names[platform]),
+    }
 
 
 def _search(request: dict[str, Any]) -> dict[str, Any]:
     if request["platform"] != "youtube":
         raise ValueError("foreign_platform_unsupported")
-    import yt_dlp  # type: ignore[import-untyped]
+    import yt_dlp
 
     options = _base_options(request)
     options["extract_flat"] = "in_playlist"
@@ -119,7 +141,9 @@ def main() -> None:
         if not isinstance(request, dict):
             raise TypeError("request_invalid")
         operation = request.get("operation")
-        if operation == "search":
+        if operation == "auth_probe":
+            result = _auth_probe(request)
+        elif operation == "search":
             result = _search(request)
         elif operation == "resolve":
             result = _resolve(request)
@@ -133,6 +157,7 @@ def main() -> None:
             "foreign_platform_unsupported",
             "request_invalid",
             "operation_invalid",
+            "browser_channel_invalid",
         } else "yt_dlp_operation_failed"
         print(json.dumps({"ok": False, "error": {"code": code}}, ensure_ascii=False))
         raise SystemExit(1)

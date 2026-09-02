@@ -39,6 +39,8 @@ from material_collector.core.media import BrowserChannel, Platform
 from material_collector.infrastructure.assets import WorkspaceAssetStoreFactory
 from material_collector.infrastructure.authentication import (
     PlaywrightAuthenticationGateway,
+    PlaywrightBrowserAuthenticationDriver,
+    YtDlpBrowserAuthenticationDriver,
 )
 from material_collector.infrastructure.executor import (
     CollectionExecutor,
@@ -124,19 +126,62 @@ def _manifest_application() -> SourceManifestApplication:
 def _authentication(
     *,
     foreign_proxy: ForeignProxy | None = None,
+    yt_dlp_runtime: FrozenYtDlpRuntime | None = None,
+    auth_profile: str = "default",
 ) -> PlaywrightAuthenticationGateway:
+    if foreign_proxy is not None and yt_dlp_runtime is not None:
+        bridge = YtDlpBridge(
+            yt_dlp_runtime,
+            foreign_proxy,
+            browser_profiles=_browser_profiles(auth_profile),
+        )
+
+        def platform_driver(
+            channel: BrowserChannel,
+            platform: Platform,
+        ) -> Any:
+            if platform in {Platform.YOUTUBE, Platform.TIKTOK}:
+                return YtDlpBrowserAuthenticationDriver(
+                    bridge,
+                    foreign_proxy,
+                    channel=channel,
+                )
+            return PlaywrightBrowserAuthenticationDriver(channel=channel)
+
+        return PlaywrightAuthenticationGateway(
+            platform_driver_factory=platform_driver,
+        )
     return PlaywrightAuthenticationGateway(foreign_proxy=foreign_proxy)
 
 
 def _authentication_for_platforms(
     platforms: tuple[Platform, ...],
+    *,
+    auth_profile: str = "default",
 ) -> PlaywrightAuthenticationGateway:
-    proxy = (
-        discover_foreign_proxy()
-        if any(platform in {Platform.YOUTUBE, Platform.TIKTOK} for platform in platforms)
-        else None
+    proxy, runtime = _prepare_foreign_runtime(platforms)
+    return _authentication(
+        foreign_proxy=proxy,
+        yt_dlp_runtime=runtime,
+        auth_profile=auth_profile,
     )
-    return _authentication(foreign_proxy=proxy)
+
+
+def _browser_profiles(
+    auth_profile: str,
+) -> dict[tuple[BrowserChannel, Platform], Path]:
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if not local_app_data:
+        raise CollectorError(
+            "managed_runtime_unavailable",
+            "LOCALAPPDATA is required for foreign-platform auth profiles.",
+        )
+    auth_root = Path(local_app_data) / "material-collector" / "auth"
+    return {
+        (channel, platform): auth_root / auth_profile / channel.value / platform.value
+        for channel in (BrowserChannel.EDGE, BrowserChannel.CHROME)
+        for platform in (Platform.YOUTUBE, Platform.TIKTOK)
+    }
 
 
 class _CliProgressReporter:
@@ -196,18 +241,11 @@ def _platform_adapters(
                 "Foreign adapters require one validated fail-closed proxy.",
             )
         runtime = yt_dlp_runtime or _managed_yt_dlp_runtime(foreign_proxy)
-        local_app_data = os.environ.get("LOCALAPPDATA")
-        if not local_app_data:
-            raise CollectorError(
-                "managed_runtime_unavailable",
-                "LOCALAPPDATA is required for foreign-platform auth profiles.",
-            )
-        auth_root = Path(local_app_data) / "material-collector" / "auth"
-        profiles = {
-            platform: auth_root / auth_profile / "edge" / platform.value
-            for platform in (Platform.YOUTUBE, Platform.TIKTOK)
-        }
-        bridge = YtDlpBridge(runtime, foreign_proxy, edge_profiles=profiles)
+        bridge = YtDlpBridge(
+            runtime,
+            foreign_proxy,
+            browser_profiles=_browser_profiles(auth_profile),
+        )
         adapters.extend([YouTubeAdapter(bridge), TikTokAdapter(transport, bridge)])
     return {adapter.platform: adapter for adapter in adapters}
 
@@ -225,6 +263,8 @@ def _workflow(
             for platform in platform_scope
     ):
         foreign_proxy = discover_foreign_proxy()
+    if foreign_proxy is not None and yt_dlp_runtime is None:
+        yt_dlp_runtime = _managed_yt_dlp_runtime(foreign_proxy)
     transport = PlaywrightPlatformTransport(foreign_proxy=foreign_proxy)
     adapters = _platform_adapters(
         transport,
@@ -234,7 +274,11 @@ def _workflow(
         yt_dlp_runtime=yt_dlp_runtime,
     )
     return CollectionWorkflow(
-        authentication=_authentication(foreign_proxy=foreign_proxy),
+        authentication=_authentication(
+            foreign_proxy=foreign_proxy,
+            yt_dlp_runtime=yt_dlp_runtime,
+            auth_profile=auth_profile,
+        ),
         search_providers=adapters,
         source_resolvers=adapters,
         media_fetchers=adapters,
@@ -896,7 +940,9 @@ def auth_status_command(
     """Probe one platform without opening an interactive login."""
 
     _execute_async(
-        lambda: _authentication_for_platforms((platform,)).probe(
+        lambda: _authentication_for_platforms(
+            (platform,), auth_profile=auth_profile
+        ).probe(
             platform, auth_profile, browser_channel
         )
     )
@@ -921,7 +967,9 @@ def auth_login_command(
     """Ensure one platform is authenticated, opening a browser when needed."""
 
     async def operation() -> dict[str, Any]:
-        selection = await _authentication_for_platforms((platform,)).ensure_authenticated(
+        selection = await _authentication_for_platforms(
+            (platform,), auth_profile=auth_profile
+        ).ensure_authenticated(
             (platform,),
             auth_profile,
             auth_wait_seconds,
@@ -958,7 +1006,7 @@ def auth_logout_command(
     """Delete one platform profile after explicit platform confirmation."""
 
     async def operation() -> dict[str, Any]:
-        await _authentication_for_platforms((platform,)).logout(
+        await _authentication().logout(
             platform,
             auth_profile,
             confirm,

@@ -55,11 +55,26 @@ Bilibili 使用其导航身份接口的明确 `isLogin` 字段。抖音在新导
 阶段、规范化原因和所需动作。登录等待超时继续返回 `auth_login_timeout`，不会触发
 跨通道回退。
 
+## YouTube/TikTok 的 yt-dlp 认证
+
+外国平台不在 Playwright 控制的窗口中执行登录。认证网关按平台选择驱动：Bilibili、
+抖音和小红书仍使用上述 Playwright 驱动；YouTube 和 TikTok 则打开安装在本机的普通
+Edge 或 Chrome，并使用独立的 `<auth-profile>/<browser-channel>/<platform>` 用户数据
+目录。启动参数不包含自动化或远程调试接口。用户完成登录后关闭该窗口，随后由冻结的
+yt-dlp 运行时通过 `cookiesfrombrowser` 读取同一指定目录并做只返回布尔值的登录态检查。
+Cookie 名和值、配置目录和代理地址均不进入 CLI 结果或日志。
+
+外国平台的普通浏览器显式使用已验证的本机代理，国内平台仍固定直连。带用户名或密码的
+代理 URL 会在启动浏览器前以 `foreign_proxy_invalid` 拒绝，避免凭据出现在本机进程参数。
+该流程必须在可交互 Windows 桌面完成；SSH 无法替代人工可见登录。
+
 ## 离线测试
 
 `tests/test_authentication.py` 使用注入式 fake driver，不访问任何平台，覆盖四态探针、
 固定登录顺序、锁占用与释放、无桌面、登录超时、配置标识安全、单平台登出、
 Edge/Chrome 选择和隔离、直连启动参数，以及抖音和小红书页面登录态优先级。
+此外覆盖外国平台专用驱动选择、普通浏览器 profile 交接、yt-dlp 通道冻结和国内平台
+路径不变。
 小红书覆盖 rendered unknown + HTTP 406 进入可见登录、登录后正证据收敛，以及持续
 不明确时的结构化超时。
 
