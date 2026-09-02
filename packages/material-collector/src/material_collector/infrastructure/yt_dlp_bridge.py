@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from material_collector.core.errors import CollectorError
-from material_collector.core.media import MediaQuality, Platform
+from material_collector.core.media import BrowserChannel, MediaQuality, Platform
 from material_collector.infrastructure.managed_yt_dlp import FrozenYtDlpRuntime
 from material_collector.infrastructure.networking import ForeignProxy, foreign_environment
 
@@ -20,20 +20,25 @@ class YtDlpBridge:
         runtime: FrozenYtDlpRuntime,
         proxy: ForeignProxy,
         *,
-        edge_profiles: dict[Platform, Path],
+        browser_profiles: dict[tuple[BrowserChannel, Platform], Path],
         runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     ) -> None:
         self.runtime = runtime
         self.proxy = proxy
-        self.edge_profiles = dict(edge_profiles)
+        self.browser_profiles = dict(browser_profiles)
         self._runner = runner
         self._worker = Path(__file__).with_name("yt_dlp_worker.py")
 
     def _invoke(self, request: dict[str, Any]) -> dict[str, Any]:
         request["proxy"] = self.proxy.url
-        profile = self.edge_profiles.get(Platform(request["platform"]))
-        if profile is not None:
-            request["edge_profile"] = str(profile)
+        channel_value = request.get("browser_channel")
+        if channel_value is not None:
+            channel = BrowserChannel(str(channel_value))
+            profile = self.browser_profiles.get(
+                (channel, Platform(request["platform"]))
+            )
+            if profile is not None:
+                request["browser_profile"] = str(profile)
         completed = self._runner(
             [str(self.runtime.python_executable), str(self._worker)],
             input=json.dumps(request, ensure_ascii=False),
@@ -69,13 +74,38 @@ class YtDlpBridge:
             )
         return result
 
-    def search_youtube(self, query: str, *, limit: int, timeout_seconds: int = 30) -> list[dict[str, Any]]:
+    def probe_auth(
+        self,
+        platform: Platform,
+        browser_channel: BrowserChannel,
+        *,
+        timeout_seconds: int = 30,
+    ) -> bool:
+        result = self._invoke(
+            {
+                "operation": "auth_probe",
+                "platform": platform,
+                "browser_channel": browser_channel,
+                "timeout_seconds": timeout_seconds,
+            }
+        )
+        return result.get("authenticated") is True
+
+    def search_youtube(
+        self,
+        query: str,
+        *,
+        limit: int,
+        browser_channel: BrowserChannel,
+        timeout_seconds: int = 30,
+    ) -> list[dict[str, Any]]:
         result = self._invoke(
             {
                 "operation": "search",
                 "platform": Platform.YOUTUBE,
                 "query": query,
                 "limit": limit,
+                "browser_channel": browser_channel,
                 "timeout_seconds": timeout_seconds,
             }
         )
@@ -87,6 +117,7 @@ class YtDlpBridge:
         platform: Platform,
         url: str,
         *,
+        browser_channel: BrowserChannel,
         timeout_seconds: int = 30,
     ) -> dict[str, Any]:
         if platform not in {Platform.YOUTUBE, Platform.TIKTOK}:
@@ -99,6 +130,7 @@ class YtDlpBridge:
                 "operation": "resolve",
                 "platform": platform,
                 "url": url,
+                "browser_channel": browser_channel,
                 "timeout_seconds": timeout_seconds,
             }
         )
@@ -114,6 +146,7 @@ class YtDlpBridge:
         destination: Path,
         quality: MediaQuality,
         *,
+        browser_channel: BrowserChannel,
         timeout_seconds: int = 300,
     ) -> dict[str, Any]:
         selector = (
@@ -128,6 +161,7 @@ class YtDlpBridge:
                 "url": url,
                 "destination": str(destination),
                 "format_selector": selector,
+                "browser_channel": browser_channel,
                 "timeout_seconds": timeout_seconds,
             }
         )

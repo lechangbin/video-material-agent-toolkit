@@ -53,6 +53,7 @@ from material_collector.infrastructure.platforms.rendered_access import (
     RenderedAccessState,
     inspect_rendered_access,
 )
+from material_collector.infrastructure.yt_dlp_bridge import YtDlpBridge
 
 if os.name == "nt":
     import msvcrt
@@ -223,6 +224,15 @@ def _login_required_action(reason_code: str) -> str:
     return "complete_login_in_visible_browser"
 
 
+def _login_hint(platform: Platform, channel: BrowserChannel) -> str:
+    if platform in {Platform.YOUTUBE, Platform.TIKTOK}:
+        return (
+            f"Complete login in the ordinary {channel.value} window, then close "
+            "that window so yt-dlp can verify the saved profile."
+        )
+    return f"Check {channel.value} in the taskbar and do not close the login window."
+
+
 @dataclass(frozen=True, slots=True)
 class DriverProbe:
     """Credential-free result returned by an injected browser driver."""
@@ -319,6 +329,10 @@ class BrowserAuthenticationDriver(Protocol):
     ) -> DriverProbe: ...
 
 
+class NativeBrowserProcess(Protocol):
+    def poll(self) -> int | None: ...
+
+
 class PlaywrightAuthenticationGateway:
     """AuthenticationGateway backed by persistent Playwright Chromium profiles."""
 
@@ -328,22 +342,35 @@ class PlaywrightAuthenticationGateway:
         root_dir: Path | None = None,
         driver: BrowserAuthenticationDriver | None = None,
         driver_factory: Callable[[BrowserChannel], BrowserAuthenticationDriver] | None = None,
+        platform_driver_factory: (
+            Callable[[BrowserChannel, Platform], BrowserAuthenticationDriver] | None
+        ) = None,
         now: Callable[[], datetime] | None = None,
         lock_wait_seconds: float = _LOCK_WAIT_SECONDS,
         native_windows: bool | None = None,
         foreign_proxy: ForeignProxy | None = None,
     ) -> None:
         self._root_dir = _resolve_auth_root(root_dir)
-        if driver is not None and driver_factory is not None:
-            raise ValueError("driver and driver_factory are mutually exclusive")
-        if driver_factory is not None:
-            self._driver_factory = driver_factory
+        provided_factories = sum(
+            value is not None
+            for value in (driver, driver_factory, platform_driver_factory)
+        )
+        if provided_factories > 1:
+            raise ValueError(
+                "driver, driver_factory and platform_driver_factory are mutually exclusive"
+            )
+        if platform_driver_factory is not None:
+            self._platform_driver_factory = platform_driver_factory
+        elif driver_factory is not None:
+            self._platform_driver_factory = lambda channel, _platform: driver_factory(channel)
         elif driver is not None:
-            self._driver_factory = lambda _channel: driver
+            self._platform_driver_factory = lambda _channel, _platform: driver
         else:
-            self._driver_factory = lambda channel: PlaywrightBrowserAuthenticationDriver(
-                channel=channel,
-                foreign_proxy=foreign_proxy,
+            self._platform_driver_factory = (
+                lambda channel, _platform: PlaywrightBrowserAuthenticationDriver(
+                    channel=channel,
+                    foreign_proxy=foreign_proxy,
+                )
             )
         self._now = now or (lambda: datetime.now(UTC))
         self._lock_wait_seconds = lock_wait_seconds
@@ -454,10 +481,7 @@ class PlaywrightAuthenticationGateway:
                         **common,
                         "actor": "human",
                         "wait_seconds": wait_seconds,
-                        "hint": (
-                            f"Check {browser_channel.value} in the taskbar and do not close "
-                            "the login window."
-                        ),
+                        "hint": _login_hint(platform, browser_channel),
                     }
                     current = await self._login_locked(
                         platform,
@@ -541,7 +565,9 @@ class PlaywrightAuthenticationGateway:
             result = DriverProbe(AuthStatus.INVALID, "profile_missing")
         else:
             try:
-                result = await self._driver_factory(browser_channel).probe(platform, profile_dir)
+                result = await self._platform_driver_factory(
+                    browser_channel, platform
+                ).probe(platform, profile_dir)
             except BrowserLifecycleError:
                 raise
             except (OSError, RuntimeError, ValueError) as error:
@@ -560,7 +586,9 @@ class PlaywrightAuthenticationGateway:
         profile_dir = self._profile_dir(auth_profile, browser_channel, platform)
         profile_dir.mkdir(parents=True, exist_ok=True)
         try:
-            result = await self._driver_factory(browser_channel).login(
+            result = await self._platform_driver_factory(
+                browser_channel, platform
+            ).login(
                 platform,
                 profile_dir,
                 wait_seconds,
@@ -810,6 +838,105 @@ class PlaywrightBrowserAuthenticationDriver:
             context,
             {"sessionid", "sessionid_ss", "sid_guard"},
         )
+
+
+class YtDlpBrowserAuthenticationDriver:
+    """Authenticate foreign platforms in an ordinary native browser profile."""
+
+    _HOME_URLS: Mapping[Platform, str] = {
+        Platform.YOUTUBE: "https://www.youtube.com/",
+        Platform.TIKTOK: "https://www.tiktok.com/",
+    }
+
+    def __init__(
+        self,
+        bridge: YtDlpBridge,
+        proxy: ForeignProxy,
+        *,
+        channel: BrowserChannel,
+        launcher: (
+            Callable[[BrowserChannel, Path, str, ForeignProxy], NativeBrowserProcess]
+            | None
+        ) = None,
+        desktop_available: Callable[[], bool] | None = None,
+        desktop_verifier: Callable[[Path, datetime], bool] | None = None,
+    ) -> None:
+        self._bridge = bridge
+        self._proxy = proxy
+        self._channel = _explicit_channel(channel)
+        self._launcher = launcher or _launch_native_browser
+        self._desktop_available = desktop_available or _interactive_desktop_available
+        self._desktop_verifier = (
+            desktop_verifier or _headed_chrome_visible_on_active_desktop
+        )
+
+    def _validate_platform(self, platform: Platform) -> None:
+        if platform not in self._HOME_URLS:
+            raise AuthenticationContractError(
+                "The yt-dlp browser driver accepts only foreign platforms.",
+                details={"platform": platform.value},
+            )
+
+    async def probe(self, platform: Platform, user_data_dir: Path) -> DriverProbe:
+        self._validate_platform(platform)
+        authenticated = await asyncio.to_thread(
+            self._bridge.probe_auth,
+            platform,
+            self._channel,
+        )
+        return DriverProbe(
+            AuthStatus.VALID if authenticated else AuthStatus.INVALID,
+            (
+                "platform_reports_logged_in"
+                if authenticated
+                else "platform_reports_logged_out"
+            ),
+        )
+
+    async def login(
+        self,
+        platform: Platform,
+        user_data_dir: Path,
+        wait_seconds: int,
+        progress: Callable[[str, dict[str, object]], None] | None = None,
+    ) -> DriverProbe:
+        self._validate_platform(platform)
+        if not await asyncio.to_thread(self._desktop_available):
+            raise BrowserDesktopUnavailableError
+        user_data_dir.mkdir(parents=True, exist_ok=True)
+        launch_started_at = datetime.now(UTC)
+        try:
+            process = await asyncio.to_thread(
+                self._launcher,
+                self._channel,
+                user_data_dir,
+                self._HOME_URLS[platform],
+                self._proxy,
+            )
+        except FileNotFoundError as error:
+            raise BrowserChannelUnavailableError from error
+        except OSError as error:
+            raise BrowserLaunchError from error
+        verification_deadline = time.monotonic() + min(10.0, wait_seconds)
+        while not await asyncio.to_thread(
+            self._desktop_verifier,
+            user_data_dir,
+            launch_started_at,
+        ):
+            if process.poll() is not None or time.monotonic() >= verification_deadline:
+                raise BrowserWindowVerificationError
+            await asyncio.sleep(0.1)
+        if progress is not None:
+            progress("authentication_login_window_opened", {"phase": "human_login"})
+        deadline = time.monotonic() + wait_seconds
+        while process.poll() is None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise BrowserLoginTimeoutError
+            if progress is not None:
+                progress("authentication_login_waiting", {"phase": "human_login"})
+            await asyncio.sleep(min(1.0, remaining))
+        return await self.probe(platform, user_data_dir)
 
 
 class _ProcessFileLock:
@@ -1117,6 +1244,53 @@ def _interactive_desktop_available() -> bool:
         return True
     active_session_id = _windows_active_session_id()
     return active_session_id is not None and _windows_current_session_id() == active_session_id
+
+
+def _resolve_native_browser_executable(channel: BrowserChannel) -> Path:
+    explicit = _explicit_channel(channel)
+    executable_name = "msedge.exe" if explicit is BrowserChannel.EDGE else "chrome.exe"
+    candidates: list[Path] = []
+    for environment_name in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
+        root = os.environ.get(environment_name)
+        if not root:
+            continue
+        relative = (
+            Path("Microsoft/Edge/Application/msedge.exe")
+            if explicit is BrowserChannel.EDGE
+            else Path("Google/Chrome/Application/chrome.exe")
+        )
+        candidates.append(Path(root) / relative)
+    discovered = shutil.which(executable_name)
+    if discovered is not None:
+        candidates.append(Path(discovered))
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError(executable_name)
+
+
+def _launch_native_browser(
+    channel: BrowserChannel,
+    user_data_dir: Path,
+    url: str,
+    proxy: ForeignProxy,
+) -> NativeBrowserProcess:
+    executable = _resolve_native_browser_executable(channel)
+    return subprocess.Popen(
+        [
+            str(executable),
+            f"--user-data-dir={user_data_dir}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-background-mode",
+            f"--proxy-server={proxy.url}",
+            url,
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+    )
 
 
 def _windows_active_session_id() -> int | None:

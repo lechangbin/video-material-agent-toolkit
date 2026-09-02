@@ -145,6 +145,7 @@ class TikTokAdapter:
             self._bridge.resolve,
             self.platform,
             canonical_url,
+            browser_channel=context.browser_channel,
             timeout_seconds=context.request_timeout_seconds,
         )
         video_id = str(info.get("id") or source_id)
@@ -172,6 +173,7 @@ class TikTokAdapter:
                 request.media_unit.canonical_url,
                 request.destination,
                 request.quality,
+                browser_channel=context.browser_channel,
                 timeout_seconds=max(context.request_timeout_seconds, 300),
             )
             return await finalize_downloaded_media(

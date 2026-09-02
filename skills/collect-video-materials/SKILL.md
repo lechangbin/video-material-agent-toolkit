@@ -50,7 +50,9 @@ continuations, or a second terminal command to replace it.
   a second `resume` for one session.
 - Treat `authentication_login_waiting` as a human action. Tell the user which platform needs
   login and which frozen browser channel was selected, then ask them to check that Edge or Chrome
-  window in the taskbar. Keep the executor alive.
+  window in the taskbar. For YouTube or TikTok, tell the user to close that ordinary browser window
+  after login so yt-dlp can verify the saved profile. For domestic platforms, keep the existing
+  login window open while the collector verifies it. Keep the executor alive.
 - Treat `foreign_proxy_required`, `foreign_proxy_unreachable`, and managed-runtime update errors
   as fail-closed foreign-platform results. Preserve the route evidence and never retry through a
   direct connection. Domestic branches remain direct even when a foreign proxy is available.

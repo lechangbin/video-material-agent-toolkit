@@ -26,9 +26,12 @@ and a third public CLI for concat-safe editing clips.
   package-hashed, conformance-tested, activated at most once per 24 hours, and frozen per collector
   session. A failed candidate retains the last-known-good version.
 - CRV follows official stable PyPI releases under the same candidate/active/frozen/LKG model.
-- Foreign login uses isolated persistent Microsoft Edge profiles outside the repository and user
-  workspaces. Cookies are never exported or passed on command lines. Login is always visible;
-  routine search/download is hidden unless the execution explicitly requests visible search.
+- Foreign login uses isolated persistent Microsoft Edge or Google Chrome profiles outside the
+  repository and user workspaces. It opens the ordinary installed browser without Playwright,
+  WebDriver, or remote-debugging flags; the human closes the window after login and yt-dlp reads
+  only that designated profile. Bilibili authentication remains unchanged. Cookies are never
+  exported or passed on command lines. Credentialed proxy URLs are rejected before browser launch.
+  Login is always visible; routine search/download is hidden unless explicitly requested.
 
 ## Structured failures
 

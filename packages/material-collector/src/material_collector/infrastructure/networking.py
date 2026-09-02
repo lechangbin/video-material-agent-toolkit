@@ -76,6 +76,12 @@ def _normalize_proxy(value: str, source: str) -> ForeignProxy:
             "The configured foreign proxy must include a host and port.",
             details={"discovery_source": source},
         )
+    if parsed.username is not None or parsed.password is not None:
+        raise CollectorError(
+            "foreign_proxy_invalid",
+            "Credentialed proxy URLs are not supported by visible browser login.",
+            details={"discovery_source": source},
+        )
     kind: Literal["http_connect", "socks5"] = (
         "socks5" if scheme.startswith("socks5") else "http_connect"
     )
