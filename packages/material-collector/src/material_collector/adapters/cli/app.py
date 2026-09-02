@@ -14,7 +14,8 @@ from typing import Annotated, Any, NoReturn
 
 import typer
 from pydantic import BaseModel, ValidationError
-from typer._click.exceptions import Abort, ClickException
+from typer import Abort
+from typer._click import ClickException
 
 from material_collector import __version__
 from material_collector.application.media_actions import MediaApplication
