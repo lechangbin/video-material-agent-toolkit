@@ -11,8 +11,9 @@ from typing import Any, NoReturn
 
 import typer
 from rich.console import Console
-from typer._click.exceptions import Exit as ClickExit
 from typer._click.exceptions import UsageError
+
+ClickExit = typer.Exit
 
 from semvideo import (
     JOB_SCHEMA_VERSION,
