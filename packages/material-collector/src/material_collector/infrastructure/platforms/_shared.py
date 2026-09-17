@@ -18,6 +18,8 @@ import httpx
 from material_collector.core.media import (
     FetchRequest,
     FetchResult,
+    GeometryDisposition,
+    GeometryStage,
     MediaQuality,
     Platform,
     PlatformContext,
@@ -25,6 +27,7 @@ from material_collector.core.media import (
 from material_collector.infrastructure.media_inspection import (
     MediaInspectionError,
     MediaProbe,
+    assess_display_geometry,
 )
 from material_collector.infrastructure.platforms.errors import PlatformAdapterError
 
@@ -123,58 +126,88 @@ async def fetch_to_destination(
             context=context,
             referer=referer,
         )
-        if not destination.is_file():
-            raise PlatformAdapterError(
-                "download_incomplete",
-                "The media transport returned without creating the destination.",
-                platform=platform,
-                operation="fetch",
-                retryable=True,
-            )
-        digest = hashlib.sha256()
-        size = 0
-        with destination.open("rb") as media_file:
-            while chunk := media_file.read(1024 * 1024):
-                size += len(chunk)
-                digest.update(chunk)
-        try:
-            probe = await asyncio.to_thread(media_inspector, destination)
-        except MediaInspectionError as exc:
-            raise PlatformAdapterError(
-                "media_inspection_failed",
-                "FFmpeg could not fully decode the downloaded media.",
-                platform=platform,
-                operation="fetch",
-                retryable=True,
-            ) from exc
-        if (
-            probe.video_stream_count < 1
-            or probe.width is None
-            or probe.height is None
-        ):
-            raise PlatformAdapterError(
-                "media_inspection_failed",
-                "The downloaded file has no measurable video stream.",
-                platform=platform,
-                operation="fetch",
-                retryable=True,
-            )
-        if (
-            request.quality is MediaQuality.LOW_PROXY
-            and min(probe.width, probe.height) > 720
-        ):
-            raise PlatformAdapterError(
-                "media_quality_exceeded",
-                "The downloaded low proxy exceeds the 720p boundary.",
-                platform=platform,
-                operation="fetch",
-                retryable=True,
-                details={"width": probe.width, "height": probe.height},
-            )
+        return await finalize_downloaded_media(
+            platform=platform,
+            request=request,
+            media_inspector=media_inspector,
+        )
     except BaseException:
         destination.unlink(missing_ok=True)
         raise
 
+
+async def finalize_downloaded_media(
+    *,
+    platform: Platform,
+    request: FetchRequest,
+    media_inspector: MediaInspector,
+) -> FetchResult:
+    """Validate staged bytes and admit only fully decoded display-16:9 media."""
+
+    destination = request.destination
+    if not destination.is_file():
+        raise PlatformAdapterError(
+            "download_incomplete",
+            "The media transport returned without creating the destination.",
+            platform=platform,
+            operation="fetch",
+            retryable=True,
+        )
+    digest = hashlib.sha256()
+    size = 0
+    with destination.open("rb") as media_file:
+        while chunk := media_file.read(1024 * 1024):
+            size += len(chunk)
+            digest.update(chunk)
+    try:
+        probe = await asyncio.to_thread(media_inspector, destination)
+    except MediaInspectionError as exc:
+        raise PlatformAdapterError(
+            "media_inspection_failed",
+            "FFmpeg could not fully decode the downloaded media.",
+            platform=platform,
+            operation="fetch",
+            retryable=True,
+        ) from exc
+    if probe.video_stream_count < 1 or probe.width is None or probe.height is None:
+        raise PlatformAdapterError(
+            "media_inspection_failed",
+            "The downloaded file has no measurable video stream.",
+            platform=platform,
+            operation="fetch",
+            retryable=True,
+        )
+    stage = (
+        GeometryStage.LOCAL_PROXY
+        if request.quality is MediaQuality.LOW_PROXY
+        else GeometryStage.LOCAL_HIGH_QUALITY
+    )
+    geometry = assess_display_geometry(probe, stage=stage)
+    if geometry.disposition is not GeometryDisposition.ACCEPTED:
+        raise PlatformAdapterError(
+            (
+                "source_geometry_ineligible"
+                if geometry.disposition is GeometryDisposition.REJECTED
+                else "source_geometry_unknown"
+            ),
+            "The staged media does not have verified 16:9 display geometry.",
+            platform=platform,
+            operation="fetch",
+            retryable=False,
+            details={
+                "geometry": geometry.model_dump(mode="json"),
+                "quality": request.quality,
+            },
+        )
+    if request.quality is MediaQuality.LOW_PROXY and min(probe.width, probe.height) > 720:
+        raise PlatformAdapterError(
+            "media_quality_exceeded",
+            "The downloaded low proxy exceeds the 720p boundary.",
+            platform=platform,
+            operation="fetch",
+            retryable=True,
+            details={"width": probe.width, "height": probe.height},
+        )
     return FetchResult(
         media_unit_id=request.media_unit.stable_id,
         quality=request.quality,
@@ -185,6 +218,7 @@ async def fetch_to_destination(
         duration_seconds=probe.duration_seconds,
         width=probe.width,
         height=probe.height,
+        geometry_assessment=geometry,
     )
 
 

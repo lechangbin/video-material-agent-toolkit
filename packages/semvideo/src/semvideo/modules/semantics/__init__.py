@@ -1,6 +1,6 @@
 """Multimodal semantic segmentation models and prompt construction."""
 
-from .models import SemanticSegment, SegmentationResponse
+from .models import SegmentationResponse, SemanticSegment
 from .proposals import (
     build_segmentation_proposal,
     response_from_proposal,
@@ -8,8 +8,8 @@ from .proposals import (
 )
 
 __all__ = [
-    "SemanticSegment",
     "SegmentationResponse",
+    "SemanticSegment",
     "build_segmentation_proposal",
     "response_from_proposal",
     "validate_response_timeline",

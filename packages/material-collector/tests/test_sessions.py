@@ -45,9 +45,24 @@ def collection_document() -> dict[str, Any]:
 
 
 def query_plan_document() -> dict[str, Any]:
+    platforms = ["bilibili", "douyin", "xiaohongshu"]
+    def branches(query_id: str, text: str, facet_id: str) -> list[dict[str, Any]]:
+        return [
+            {
+                "platform": platform,
+                "language": "zh-CN",
+                "queries": [{
+                    "query_id": f"{query_id}_{platform}",
+                    "text": text,
+                    "facet_ids": [facet_id],
+                    "budget": 20,
+                }],
+            }
+            for platform in platforms
+        ]
     return {
-        "schema_version": "2.0",
-        "platform_scope": ["bilibili", "douyin", "xiaohongshu"],
+        "schema_version": "3.0",
+        "platform_scope": platforms,
         "plans": [
             {
                 "segment_id": "seg_a",
@@ -55,18 +70,7 @@ def query_plan_document() -> dict[str, Any]:
                 "required_visual_facets": [
                     {"facet_id": "facet_a", "description": "主题一画面"}
                 ],
-                "initial_queries": [
-                    {
-                        "query_id": "query_a",
-                        "text": "主题一",
-                        "target_platforms": [
-                            "bilibili",
-                            "douyin",
-                            "xiaohongshu",
-                        ],
-                        "facet_ids": ["facet_a"],
-                    }
-                ],
+                "platform_branches": branches("query_a", "主题一", "facet_a"),
             },
             {
                 "segment_id": "seg_b",
@@ -74,18 +78,7 @@ def query_plan_document() -> dict[str, Any]:
                 "required_visual_facets": [
                     {"facet_id": "facet_b", "description": "主题二画面"}
                 ],
-                "initial_queries": [
-                    {
-                        "query_id": "query_b",
-                        "text": "主题二",
-                        "target_platforms": [
-                            "bilibili",
-                            "douyin",
-                            "xiaohongshu",
-                        ],
-                        "facet_ids": ["facet_b"],
-                    }
-                ],
+                "platform_branches": branches("query_b", "主题二", "facet_b"),
             },
         ],
     }
@@ -201,6 +194,16 @@ def test_application_accepts_a_store_adapter_without_touching_files(
                 f"unexpected browser freeze: {received_workspace} {session_id} {channel}"
             )
 
+        def freeze_yt_dlp_version(
+            self,
+            received_workspace: Path,
+            session_id: str,
+            version: str,
+        ) -> SessionView:
+            raise AssertionError(
+                f"unexpected yt-dlp freeze: {received_workspace} {session_id} {version}"
+            )
+
     application = SessionApplication(store=InMemorySessionStore())
 
     assert application.create_session(request) is session
@@ -229,6 +232,7 @@ def test_create_session_freezes_documents_and_initializes_sqlite(
     assert created.constraints.request_timeout_seconds == 45
     assert created.constraints.browser_channel is BrowserChannel.AUTO
     assert created.selected_browser_channel is None
+    assert created.selected_yt_dlp_version is None
     assert [segment.status for segment in created.segments] == ["planned", "planned"]
     assert input_snapshot.is_file()
     assert plans_snapshot.is_file()
@@ -276,6 +280,34 @@ def test_session_freezes_the_first_successful_browser_channel(tmp_path: Path) ->
             workspace,
             created.session_id,
             BrowserChannel.CHROME,
+        )
+
+
+def test_session_freezes_one_tested_yt_dlp_version(tmp_path: Path) -> None:
+    workspace = tmp_path / "materials"
+    application = deterministic_application("ses_ytdlp_001")
+    created = application.create_session(create_request(tmp_path, workspace))
+
+    frozen = application.freeze_yt_dlp_version(
+        workspace,
+        created.session_id,
+        "2026.08.17.232923",
+    )
+
+    assert frozen.selected_yt_dlp_version == "2026.08.17.232923"
+    assert (
+        application.freeze_yt_dlp_version(
+            workspace,
+            created.session_id,
+            "2026.08.17.232923",
+        ).selected_yt_dlp_version
+        == "2026.08.17.232923"
+    )
+    with pytest.raises(SessionStateError):
+        application.freeze_yt_dlp_version(
+            workspace,
+            created.session_id,
+            "2026.08.18.000001",
         )
 
 def test_invalid_input_does_not_create_workspace_or_session(tmp_path: Path) -> None:

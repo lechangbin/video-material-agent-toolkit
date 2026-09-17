@@ -29,7 +29,7 @@ material-collector media fetch-hq
 material-collector version
 ```
 
-`run` 会冻结输入，只检查 QueryPlans 2.0 范围内的平台登录态；Windows 原生模式默认先尝试 Edge、再尝试
+`run` 会冻结输入，只检查 QueryPlans 3.0 范围内的平台登录态；Windows 原生模式默认先尝试 Edge、再尝试
 Chrome，需要登录时打开所选浏览器的有头窗口，随后固定使用同一通道的无头浏览器
 并发搜索范围内的 Bilibili、抖音和/或小红书，解析媒体单元并下载低码率
 代理。低码率代理选择源站最高且不超过 720p 的版本，并在落地后通过本地
@@ -57,7 +57,7 @@ CLI 内伪造理解、Top-K、落库或素材充分性结果。
 `contracts normalize` 是无状态、只读的机器接口，用于让外部编排在创建会话前取得与
 `run` 完全相同的规范化采集输入和 QueryPlan；它不创建会话或写入素材工作区。
 `contracts schema` 从同一组 Pydantic 输入模型返回 Collection input 1.0 与
-QueryPlans 2.0 的机器可读 Schema；`version` 返回 CLI 0.2.1、Skill 协议 1 和支持的
+QueryPlans 3.0 的机器可读 Schema；`version` 返回 CLI 0.3.0、Skill 协议 1 和支持的
 输入范围。安装后的 Skill 解析器先用 `version` 确认精确兼容性，正常请求直接读取
 Skill 随附的 Schema 和最小示例，不通过运行时失败猜字段。
 
@@ -77,7 +77,7 @@ Docker 环境固定使用 Chrome。显式选择 `edge` 或 `chrome` 时不会跨
 登录配置按认证 profile、浏览器通道、平台三层隔离，默认保存在当前 Windows 用户的
 本地应用数据目录，不进入仓库和素材工作区。首次成功通道会写入 session，恢复执行不会
 重新自动选择或切换浏览器。
-浏览器固定以 `--no-proxy-server` 启动，HTTP 下载固定禁用环境代理，因此默认不会
+国内平台浏览器固定以 `--no-proxy-server` 启动，HTTP 下载固定禁用环境代理，因此默认不会
 使用 Windows 系统代理、`HTTP_PROXY`/`HTTPS_PROXY` 或本机 `127.0.0.1:10808`。
 认证探针、有头登录和平台无头浏览器均显式启用 Chromium sandbox；有头登录会输出
 逐平台探针、窗口导航、窗口打开和等待事件，并提示用户检查任务栏。Windows 桌面
@@ -85,6 +85,11 @@ Docker 环境固定使用 Chrome。显式选择 `edge` 或 `chrome` 时不会跨
 完成前关闭全部页面会立即进入可恢复的 `auth_required`，不会静默等待完整超时。
 抖音和小红书优先使用已渲染页面的登录标志判断状态，身份接口仅作为兜底，避免
 平台裸接口拒绝请求时把已登录页面误判为未登录。
+
+YouTube/TikTok 登录改用本机普通 Edge 或 Chrome 窗口，不通过 Playwright 控制，也不附加
+WebDriver 或远程调试参数；用户登录后关闭窗口，冻结的 yt-dlp 运行时再从该平台的隔离
+profile 读取登录态。外国平台才使用已验证代理，搜索与下载默认隐藏。Bilibili 的登录、
+探针和下载路径没有变化。带用户名或密码的代理 URL 会在可见浏览器启动前被拒绝。
 
 ## 当前 CLI 示例
 

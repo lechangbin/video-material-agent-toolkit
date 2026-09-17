@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any, Literal, cast
 from urllib.parse import urlsplit, urlunsplit
 
+from pydantic import BaseModel
+
 from material_collector.application.sessions import (
     COLLECTION_RESULT,
     CONTROL_DIRECTORY,
@@ -32,7 +34,11 @@ from material_collector.core.manifest import (
 )
 from material_collector.core.media import (
     AssetRecord,
+    AuthorizationDisposition,
+    DisplayGeometryAssessment,
     MediaQuality,
+    NetworkRoute,
+    NetworkRouteEvidence,
     Platform,
     ResolvedSource,
     SearchBatch,
@@ -44,12 +50,26 @@ _STABLE_MEDIA_METADATA_KEYS: dict[Platform, frozenset[str]] = {
     Platform.BILIBILI: frozenset({"bvid", "cid"}),
     Platform.DOUYIN: frozenset({"aweme_id"}),
     Platform.XIAOHONGSHU: frozenset({"note_id"}),
+    Platform.YOUTUBE: frozenset({"extractor"}),
+    Platform.TIKTOK: frozenset({"extractor", "username"}),
 }
 _ALLOWED_HOSTS: dict[Platform, tuple[str, ...]] = {
     Platform.BILIBILI: ("bilibili.com", "b23.tv"),
     Platform.DOUYIN: ("douyin.com", "iesdouyin.com"),
     Platform.XIAOHONGSHU: ("xiaohongshu.com", "xhslink.com"),
+    Platform.YOUTUBE: ("youtube.com", "youtu.be"),
+    Platform.TIKTOK: ("tiktok.com",),
 }
+def _optional_model_json(value: BaseModel | None) -> str | None:
+    return None if value is None else value.model_dump_json()
+
+
+def _optional_model[ModelT: BaseModel](
+    value: object, model: type[ModelT]
+) -> ModelT | None:
+    if value is None:
+        return None
+    return model.model_validate_json(str(value))
 
 
 class SqliteSourceManifestStore:
@@ -107,8 +127,13 @@ class SqliteSourceManifestStore:
                             author,
                             description,
                             published_at,
-                            duration_seconds
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            duration_seconds,
+                            network_route,
+                            route_evidence_json,
+                            yt_dlp_version,
+                            authorization_disposition,
+                            geometry_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(candidate_id) DO UPDATE SET
                             canonical_url = excluded.canonical_url,
                             title = excluded.title,
@@ -124,6 +149,20 @@ class SqliteSourceManifestStore:
                             duration_seconds = COALESCE(
                                 excluded.duration_seconds,
                                 candidate_source.duration_seconds
+                            ),
+                            network_route = excluded.network_route,
+                            route_evidence_json = COALESCE(
+                                excluded.route_evidence_json,
+                                candidate_source.route_evidence_json
+                            ),
+                            yt_dlp_version = COALESCE(
+                                excluded.yt_dlp_version,
+                                candidate_source.yt_dlp_version
+                            ),
+                            authorization_disposition = excluded.authorization_disposition,
+                            geometry_json = COALESCE(
+                                excluded.geometry_json,
+                                candidate_source.geometry_json
                             )
                         """,
                         (
@@ -136,6 +175,11 @@ class SqliteSourceManifestStore:
                             candidate.description,
                             candidate.published_at,
                             candidate.duration_seconds,
+                            candidate.network_route,
+                            _optional_model_json(candidate.route_evidence),
+                            candidate.yt_dlp_version,
+                            candidate.authorization_disposition,
+                            _optional_model_json(candidate.geometry_assessment),
                         ),
                     )
                     connection.execute(
@@ -206,8 +250,13 @@ class SqliteSourceManifestStore:
                             duration_seconds,
                             part_index,
                             metadata_json,
+                            network_route,
+                            route_evidence_json,
+                            yt_dlp_version,
+                            authorization_disposition,
+                            geometry_json,
                             status
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(media_unit_id) DO UPDATE SET
                             title = excluded.title,
                             canonical_url = excluded.canonical_url,
@@ -220,6 +269,20 @@ class SqliteSourceManifestStore:
                                 media_unit.part_index
                             ),
                             metadata_json = excluded.metadata_json,
+                            network_route = excluded.network_route,
+                            route_evidence_json = COALESCE(
+                                excluded.route_evidence_json,
+                                media_unit.route_evidence_json
+                            ),
+                            yt_dlp_version = COALESCE(
+                                excluded.yt_dlp_version,
+                                media_unit.yt_dlp_version
+                            ),
+                            authorization_disposition = excluded.authorization_disposition,
+                            geometry_json = COALESCE(
+                                excluded.geometry_json,
+                                media_unit.geometry_json
+                            ),
                             status = CASE
                                 WHEN media_unit.status IN (
                                     'proxy_ready',
@@ -240,6 +303,11 @@ class SqliteSourceManifestStore:
                                 media_unit.platform,
                                 media_unit.metadata,
                             ),
+                            media_unit.network_route,
+                            _optional_model_json(media_unit.route_evidence),
+                            media_unit.yt_dlp_version,
+                            media_unit.authorization_disposition,
+                            _optional_model_json(media_unit.geometry_assessment),
                             status,
                         ),
                     )
@@ -279,8 +347,9 @@ class SqliteSourceManifestStore:
                         container,
                         duration_seconds,
                         width,
-                        height
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        height,
+                        geometry_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(media_unit_id, quality) DO UPDATE SET
                         asset_id = excluded.asset_id,
                         sha256 = excluded.sha256,
@@ -290,7 +359,8 @@ class SqliteSourceManifestStore:
                         container = excluded.container,
                         duration_seconds = excluded.duration_seconds,
                         width = excluded.width,
-                        height = excluded.height
+                        height = excluded.height,
+                        geometry_json = excluded.geometry_json
                     """,
                     (
                         asset.media_unit_id,
@@ -304,6 +374,7 @@ class SqliteSourceManifestStore:
                         asset.duration_seconds,
                         asset.width,
                         asset.height,
+                        _optional_model_json(asset.geometry_assessment),
                     ),
                 )
                 status = (
@@ -527,6 +598,11 @@ def _ensure_manifest_schema(connection: sqlite3.Connection) -> None:
             description TEXT,
             published_at TEXT,
             duration_seconds REAL,
+            network_route TEXT NOT NULL DEFAULT 'domestic_direct',
+            route_evidence_json TEXT,
+            yt_dlp_version TEXT,
+            authorization_disposition TEXT NOT NULL DEFAULT 'authorized',
+            geometry_json TEXT,
             UNIQUE(platform, source_id)
         );
 
@@ -548,6 +624,11 @@ def _ensure_manifest_schema(connection: sqlite3.Connection) -> None:
             duration_seconds REAL,
             part_index INTEGER,
             metadata_json TEXT NOT NULL DEFAULT '{}',
+            network_route TEXT NOT NULL DEFAULT 'domestic_direct',
+            route_evidence_json TEXT,
+            yt_dlp_version TEXT,
+            authorization_disposition TEXT NOT NULL DEFAULT 'authorized',
+            geometry_json TEXT,
             status TEXT NOT NULL,
             review_decision TEXT,
             review_actor TEXT,
@@ -566,6 +647,7 @@ def _ensure_manifest_schema(connection: sqlite3.Connection) -> None:
             duration_seconds REAL,
             width INTEGER,
             height INTEGER,
+            geometry_json TEXT,
             PRIMARY KEY(media_unit_id, quality)
         );
 
@@ -598,7 +680,44 @@ def _ensure_manifest_schema(connection: sqlite3.Connection) -> None:
         connection.execute(
             "ALTER TABLE media_unit ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'"
         )
+    _ensure_columns(
+        connection,
+        "candidate_source",
+        {
+            "network_route": "TEXT NOT NULL DEFAULT 'domestic_direct'",
+            "route_evidence_json": "TEXT",
+            "yt_dlp_version": "TEXT",
+            "authorization_disposition": "TEXT NOT NULL DEFAULT 'authorized'",
+            "geometry_json": "TEXT",
+        },
+    )
+    _ensure_columns(
+        connection,
+        "media_unit",
+        {
+            "network_route": "TEXT NOT NULL DEFAULT 'domestic_direct'",
+            "route_evidence_json": "TEXT",
+            "yt_dlp_version": "TEXT",
+            "authorization_disposition": "TEXT NOT NULL DEFAULT 'authorized'",
+            "geometry_json": "TEXT",
+        },
+    )
+    _ensure_columns(connection, "media_asset_ref", {"geometry_json": "TEXT"})
     connection.commit()
+
+
+def _ensure_columns(
+    connection: sqlite3.Connection,
+    table: str,
+    columns: Mapping[str, str],
+) -> None:
+    present = {
+        str(row[1])
+        for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+    }
+    for name, declaration in columns.items():
+        if name not in present:
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {declaration}")
 
 
 def _ensure_manifest_schema_read(connection: sqlite3.Connection) -> None:
@@ -664,6 +783,19 @@ def _candidate_from_row(connection: sqlite3.Connection, row: sqlite3.Row) -> Man
         duration_seconds=None
         if row["duration_seconds"] is None
         else float(row["duration_seconds"]),
+        network_route=NetworkRoute(str(row["network_route"])),
+        route_evidence=_optional_model(
+            row["route_evidence_json"], NetworkRouteEvidence
+        ),
+        yt_dlp_version=None
+        if row["yt_dlp_version"] is None
+        else str(row["yt_dlp_version"]),
+        authorization_disposition=AuthorizationDisposition(
+            str(row["authorization_disposition"])
+        ),
+        geometry_assessment=_optional_model(
+            row["geometry_json"], DisplayGeometryAssessment
+        ),
         discoveries=tuple(
             DiscoveryLink(
                 query_plan_id=str(discovery["query_plan_id"]),
@@ -752,6 +884,19 @@ def _media_unit_from_row(
                 "duration_unknown",
             }
             and (membership is None or str(membership["role"]) == "primary")
+        ),
+        network_route=NetworkRoute(str(row["network_route"])),
+        route_evidence=_optional_model(
+            row["route_evidence_json"], NetworkRouteEvidence
+        ),
+        yt_dlp_version=None
+        if row["yt_dlp_version"] is None
+        else str(row["yt_dlp_version"]),
+        authorization_disposition=AuthorizationDisposition(
+            str(row["authorization_disposition"])
+        ),
+        geometry_assessment=_optional_model(
+            row["geometry_json"], DisplayGeometryAssessment
         ),
     )
 
@@ -858,6 +1003,9 @@ def _asset_from_row(row: sqlite3.Row) -> AssetRecord:
         else float(row["duration_seconds"]),
         width=None if row["width"] is None else int(row["width"]),
         height=None if row["height"] is None else int(row["height"]),
+        geometry_assessment=_optional_model(
+            row["geometry_json"], DisplayGeometryAssessment
+        ),
     )
 
 

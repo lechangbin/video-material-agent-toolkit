@@ -10,9 +10,10 @@ import json
 import re
 import shutil
 import subprocess
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, cast
 
 from semvideo.infrastructure.io import unlink_best_effort
 
@@ -326,7 +327,8 @@ class FfmpegAdapter:
                 )
             )
 
-        tags_for = lambda stream: stream.get("tags") or {}
+        def tags_for(stream: dict[str, Any]) -> dict[str, Any]:
+            return cast(dict[str, Any], stream.get("tags") or {})
         audio_streams = tuple(
             AudioStreamFacts(
                 index=int(stream["index"]),

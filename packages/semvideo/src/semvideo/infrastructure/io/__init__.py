@@ -13,6 +13,7 @@ from .atomic import (
 )
 
 __all__ = [
+    "UnsupportedSchemaVersionError",
     "append_json_line",
     "atomic_write_bytes",
     "atomic_write_json",
@@ -21,5 +22,4 @@ __all__ = [
     "read_versioned_json_lines",
     "unlink_best_effort",
     "validate_schema_version",
-    "UnsupportedSchemaVersionError",
 ]

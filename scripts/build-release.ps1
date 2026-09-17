@@ -17,12 +17,24 @@ New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
 
 $collectorRoot = Join-Path $repositoryRoot 'packages\material-collector'
 $semvideoRoot = Join-Path $repositoryRoot 'packages\semvideo'
+$conformanceRoot = Join-Path $repositoryRoot 'packages\media-conformance'
 
 Push-Location $collectorRoot
 try {
     & uv build --wheel --out-dir $OutputDirectory
     if ($LASTEXITCODE -ne 0) {
         throw 'material-collector wheel build failed.'
+    }
+}
+finally {
+Pop-Location
+}
+
+Push-Location $conformanceRoot
+try {
+    & uv build --wheel --out-dir $OutputDirectory
+    if ($LASTEXITCODE -ne 0) {
+        throw 'media-conformance wheel build failed.'
     }
 }
 finally {

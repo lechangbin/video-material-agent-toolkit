@@ -212,6 +212,61 @@ class SqliteSessionStore:
             ) from error
         return self.get_session(normalized_workspace, session_id)
 
+    def freeze_yt_dlp_version(
+        self,
+        workspace: Path,
+        session_id: str,
+        version: str,
+    ) -> SessionView:
+        """Persist the tested yt-dlp version selected for one collection session."""
+
+        _validate_session_id(session_id)
+        normalized_workspace = _normalize_workspace(workspace, create=False)
+        database_path = _session_directory(normalized_workspace, session_id) / SESSION_DATABASE
+        if not database_path.is_file():
+            raise SessionNotFoundError(session_id)
+        try:
+            with closing(sqlite3.connect(database_path, timeout=5.0)) as connection:
+                connection.row_factory = sqlite3.Row
+                connection.execute("PRAGMA busy_timeout = 5000")
+                _verify_database(connection, session_id)
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute(
+                    "SELECT selected_yt_dlp_version FROM session_state WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+                if row is None:
+                    raise SessionStateError(
+                        "The session database does not contain its expected session row.",
+                        details={"session_id": session_id},
+                    )
+                selected = row["selected_yt_dlp_version"]
+                if selected is not None and selected != version:
+                    raise SessionStateError(
+                        "The session yt-dlp runtime version is already frozen.",
+                        details={
+                            "session_id": session_id,
+                            "selected_yt_dlp_version": selected,
+                        },
+                    )
+                if selected is None:
+                    connection.execute(
+                        """
+                        UPDATE session_state
+                        SET selected_yt_dlp_version = ?, state_version = state_version + 1,
+                            updated_at = ?
+                        WHERE session_id = ?
+                        """,
+                        (version, _iso_utc(self._now()), session_id),
+                    )
+                connection.commit()
+        except sqlite3.Error as error:
+            raise SessionStateError(
+                "The session yt-dlp runtime version could not be frozen.",
+                details={"session_id": session_id},
+            ) from error
+        return self.get_session(normalized_workspace, session_id)
+
     def get_session(self, workspace: Path, session_id: str) -> SessionView:
         """Read one session without mutating its business state."""
 
@@ -243,7 +298,8 @@ class SqliteSessionStore:
                         auth_wait_seconds,
                         request_timeout_seconds,
                         browser_channel,
-                        selected_browser_channel
+                        selected_browser_channel,
+                        selected_yt_dlp_version
                     FROM session_state
                     WHERE session_id = ?
                     """,
@@ -319,6 +375,11 @@ class SqliteSessionStore:
             selected_browser_channel=(
                 BrowserChannel(str(row["selected_browser_channel"]))
                 if row["selected_browser_channel"] is not None
+                else None
+            ),
+            selected_yt_dlp_version=(
+                str(row["selected_yt_dlp_version"])
+                if row["selected_yt_dlp_version"] is not None
                 else None
             ),
             segments=tuple(
@@ -577,7 +638,8 @@ def _initialize_database(
                     browser_channel TEXT NOT NULL
                         CHECK (browser_channel IN ('auto', 'edge', 'chrome')),
                     selected_browser_channel TEXT
-                        CHECK (selected_browser_channel IN ('edge', 'chrome'))
+                        CHECK (selected_browser_channel IN ('edge', 'chrome')),
+                    selected_yt_dlp_version TEXT
                 );
 
                 CREATE TABLE segment_state (
@@ -681,8 +743,9 @@ def _initialize_database(
                     auth_wait_seconds,
                     request_timeout_seconds,
                     browser_channel,
-                    selected_browser_channel
-                ) VALUES (?, 'initialized', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                    selected_browser_channel,
+                    selected_yt_dlp_version
+                ) VALUES (?, 'initialized', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
                 """,
                 (
                     session_id,

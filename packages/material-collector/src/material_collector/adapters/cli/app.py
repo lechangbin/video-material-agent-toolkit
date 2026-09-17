@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from collections.abc import Callable, Coroutine
 from dataclasses import asdict
@@ -13,7 +14,8 @@ from typing import Annotated, Any, NoReturn
 
 import typer
 from pydantic import BaseModel, ValidationError
-from typer._click.exceptions import Abort, ClickException
+from typer import Abort
+from typer._click import ClickException
 
 from material_collector import __version__
 from material_collector.application.media_actions import MediaApplication
@@ -38,26 +40,40 @@ from material_collector.core.media import BrowserChannel, Platform
 from material_collector.infrastructure.assets import WorkspaceAssetStoreFactory
 from material_collector.infrastructure.authentication import (
     PlaywrightAuthenticationGateway,
+    PlaywrightBrowserAuthenticationDriver,
+    YtDlpBrowserAuthenticationDriver,
 )
 from material_collector.infrastructure.executor import (
     CollectionExecutor,
     ExecutorFailure,
     ExecutorInvocation,
 )
+from material_collector.infrastructure.managed_yt_dlp import (
+    FrozenYtDlpRuntime,
+    ManagedYtDlpRuntime,
+)
 from material_collector.infrastructure.media_inspection import (
     LocalMediaFingerprintService,
+)
+from material_collector.infrastructure.networking import (
+    ForeignProxy,
+    discover_foreign_proxy,
+    foreign_environment,
 )
 from material_collector.infrastructure.platforms import (
     BilibiliAdapter,
     DouyinAdapter,
     PlaywrightPlatformTransport,
+    TikTokAdapter,
     XiaohongshuAdapter,
+    YouTubeAdapter,
 )
 from material_collector.infrastructure.session_runtime_store import SqliteSessionRuntime
 from material_collector.infrastructure.session_store import SqliteSessionStore
 from material_collector.infrastructure.source_manifest_store import (
     SqliteSourceManifestStore,
 )
+from material_collector.infrastructure.yt_dlp_bridge import YtDlpBridge
 
 app = typer.Typer(
     add_completion=False,
@@ -108,8 +124,65 @@ def _manifest_application() -> SourceManifestApplication:
     return SourceManifestApplication(store=SqliteSourceManifestStore())
 
 
-def _authentication() -> PlaywrightAuthenticationGateway:
-    return PlaywrightAuthenticationGateway()
+def _authentication(
+    *,
+    foreign_proxy: ForeignProxy | None = None,
+    yt_dlp_runtime: FrozenYtDlpRuntime | None = None,
+    auth_profile: str = "default",
+) -> PlaywrightAuthenticationGateway:
+    if foreign_proxy is not None and yt_dlp_runtime is not None:
+        bridge = YtDlpBridge(
+            yt_dlp_runtime,
+            foreign_proxy,
+            browser_profiles=_browser_profiles(auth_profile),
+        )
+
+        def platform_driver(
+            channel: BrowserChannel,
+            platform: Platform,
+        ) -> Any:
+            if platform in {Platform.YOUTUBE, Platform.TIKTOK}:
+                return YtDlpBrowserAuthenticationDriver(
+                    bridge,
+                    foreign_proxy,
+                    channel=channel,
+                )
+            return PlaywrightBrowserAuthenticationDriver(channel=channel)
+
+        return PlaywrightAuthenticationGateway(
+            platform_driver_factory=platform_driver,
+        )
+    return PlaywrightAuthenticationGateway(foreign_proxy=foreign_proxy)
+
+
+def _authentication_for_platforms(
+    platforms: tuple[Platform, ...],
+    *,
+    auth_profile: str = "default",
+) -> PlaywrightAuthenticationGateway:
+    proxy, runtime = _prepare_foreign_runtime(platforms)
+    return _authentication(
+        foreign_proxy=proxy,
+        yt_dlp_runtime=runtime,
+        auth_profile=auth_profile,
+    )
+
+
+def _browser_profiles(
+    auth_profile: str,
+) -> dict[tuple[BrowserChannel, Platform], Path]:
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if not local_app_data:
+        raise CollectorError(
+            "managed_runtime_unavailable",
+            "LOCALAPPDATA is required for foreign-platform auth profiles.",
+        )
+    auth_root = Path(local_app_data) / "material-collector" / "auth"
+    return {
+        (channel, platform): auth_root / auth_profile / channel.value / platform.value
+        for channel in (BrowserChannel.EDGE, BrowserChannel.CHROME)
+        for platform in (Platform.YOUTUBE, Platform.TIKTOK)
+    }
 
 
 class _CliProgressReporter:
@@ -146,21 +219,67 @@ def _human_progress_value(value: object) -> str:
 
 def _platform_adapters(
     transport: PlaywrightPlatformTransport | None = None,
+    *,
+    platform_scope: tuple[Platform, ...] = (
+        Platform.BILIBILI,
+        Platform.DOUYIN,
+        Platform.XIAOHONGSHU,
+    ),
+    auth_profile: str = "default",
+    foreign_proxy: ForeignProxy | None = None,
+    yt_dlp_runtime: FrozenYtDlpRuntime | None = None,
 ) -> dict[Platform, Any]:
-    transport = transport or PlaywrightPlatformTransport()
-    adapters = (
+    transport = transport or PlaywrightPlatformTransport(foreign_proxy=foreign_proxy)
+    adapters: list[Any] = [
         BilibiliAdapter(transport),
         DouyinAdapter(transport),
         XiaohongshuAdapter(transport),
-    )
+    ]
+    if any(platform in {Platform.YOUTUBE, Platform.TIKTOK} for platform in platform_scope):
+        if foreign_proxy is None:
+            raise CollectorError(
+                "foreign_proxy_required",
+                "Foreign adapters require one validated fail-closed proxy.",
+            )
+        runtime = yt_dlp_runtime or _managed_yt_dlp_runtime(foreign_proxy)
+        bridge = YtDlpBridge(
+            runtime,
+            foreign_proxy,
+            browser_profiles=_browser_profiles(auth_profile),
+        )
+        adapters.extend([YouTubeAdapter(bridge), TikTokAdapter(transport, bridge)])
     return {adapter.platform: adapter for adapter in adapters}
 
 
-def _workflow(*, progress: _CliProgressReporter) -> CollectionWorkflow:
-    transport = PlaywrightPlatformTransport()
-    adapters = _platform_adapters(transport)
+def _workflow(
+    *,
+    progress: _CliProgressReporter,
+    platform_scope: tuple[Platform, ...],
+    auth_profile: str,
+    foreign_proxy: ForeignProxy | None = None,
+    yt_dlp_runtime: FrozenYtDlpRuntime | None = None,
+) -> CollectionWorkflow:
+    if foreign_proxy is None and any(
+            platform in {Platform.YOUTUBE, Platform.TIKTOK}
+            for platform in platform_scope
+    ):
+        foreign_proxy = discover_foreign_proxy()
+    if foreign_proxy is not None and yt_dlp_runtime is None:
+        yt_dlp_runtime = _managed_yt_dlp_runtime(foreign_proxy)
+    transport = PlaywrightPlatformTransport(foreign_proxy=foreign_proxy)
+    adapters = _platform_adapters(
+        transport,
+        platform_scope=platform_scope,
+        auth_profile=auth_profile,
+        foreign_proxy=foreign_proxy,
+        yt_dlp_runtime=yt_dlp_runtime,
+    )
     return CollectionWorkflow(
-        authentication=_authentication(),
+        authentication=_authentication(
+            foreign_proxy=foreign_proxy,
+            yt_dlp_runtime=yt_dlp_runtime,
+            auth_profile=auth_profile,
+        ),
         search_providers=adapters,
         source_resolvers=adapters,
         media_fetchers=adapters,
@@ -171,12 +290,70 @@ def _workflow(*, progress: _CliProgressReporter) -> CollectionWorkflow:
         fingerprints=LocalMediaFingerprintService(),
         search_browser_sessions=transport,
         progress=progress,
+        platform_scope=platform_scope,
     )
 
 
-def _media_application() -> MediaApplication:
+def _managed_yt_dlp_runtime(
+    foreign_proxy: ForeignProxy,
+    requested_version: str | None = None,
+) -> FrozenYtDlpRuntime:
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if not local_app_data:
+        raise CollectorError(
+            "managed_runtime_unavailable",
+            "LOCALAPPDATA is required for the managed yt-dlp runtime.",
+        )
+    toolkit_root = Path(local_app_data) / "video-material-agent-toolkit"
+    manager = ManagedYtDlpRuntime(
+        toolkit_root / "runtimes" / "yt-dlp",
+        environment=foreign_environment(foreign_proxy),
+    )
+    if requested_version is not None:
+        return manager.freeze_for_session(requested_version)
+    if manager.update_due():
+        try:
+            return manager.install_candidate()
+        except CollectorError:
+            return manager.active()
+    return manager.active()
+
+
+def _prepare_foreign_runtime(
+    platform_scope: tuple[Platform, ...],
+    requested_version: str | None = None,
+) -> tuple[ForeignProxy | None, FrozenYtDlpRuntime | None]:
+    if not any(
+        platform in {Platform.YOUTUBE, Platform.TIKTOK}
+        for platform in platform_scope
+    ):
+        return None, None
+    foreign_proxy = discover_foreign_proxy()
+    return foreign_proxy, _managed_yt_dlp_runtime(foreign_proxy, requested_version)
+
+
+def _media_application(
+    *,
+    platform_scope: tuple[Platform, ...] | None = None,
+    auth_profile: str = "default",
+) -> MediaApplication:
+    adapters: dict[Platform, Any] | None = None
+    if platform_scope is not None:
+        foreign_proxy = (
+            discover_foreign_proxy()
+            if any(
+                platform in {Platform.YOUTUBE, Platform.TIKTOK}
+                for platform in platform_scope
+            )
+            else None
+        )
+        adapters = _platform_adapters(
+            platform_scope=platform_scope,
+            auth_profile=auth_profile,
+            foreign_proxy=foreign_proxy,
+        )
     return MediaApplication(
-        media_fetchers=_platform_adapters(),
+        media_fetchers=adapters,
         manifest=_manifest_application(),
         asset_stores=WorkspaceAssetStoreFactory(),
     )
@@ -496,7 +673,7 @@ def version_command() -> None:
             "cli_version": __version__,
             "skill_protocol_version": 1,
             "collection_input_schema": {"min": "1.0", "max": "1.0"},
-            "query_plans_schema": {"min": "2.0", "max": "2.0"},
+            "query_plans_schema": {"min": "3.0", "max": "3.0"},
         }
     )
 
@@ -529,7 +706,7 @@ def run_command(
             file_okay=True,
             dir_okay=False,
             readable=True,
-            help="UTF-8 JSON QueryPlan document using schema version 2.0.",
+            help="UTF-8 JSON QueryPlan document using schema version 3.0.",
         ),
     ],
     max_rounds: Annotated[
@@ -608,9 +785,27 @@ def run_command(
             query_plans_path=query_plans_path,
             constraints=constraints,
         )
-        session = _application().create_session(request)
+        application = _application()
+        session = application.create_session(request)
+        _collection, query_plans = application.load_frozen_contracts(
+            workspace,
+            session.session_id,
+        )
+        foreign_proxy, yt_dlp_runtime = _prepare_foreign_runtime(
+            query_plans.platform_scope
+        )
+        if yt_dlp_runtime is not None:
+            session = application.freeze_yt_dlp_version(
+                workspace,
+                session.session_id,
+                yt_dlp_runtime.version,
+            )
         return await _workflow(
-            progress=_CliProgressReporter(progress_format)
+            progress=_CliProgressReporter(progress_format),
+            platform_scope=query_plans.platform_scope,
+            auth_profile=auth_profile,
+            foreign_proxy=foreign_proxy,
+            yt_dlp_runtime=yt_dlp_runtime,
         ).run(
             workspace,
             session.session_id,
@@ -648,9 +843,27 @@ def resume_command(
 ) -> None:
     """Resume from the first uncommitted stage."""
 
+    application = _application()
+    session = application.get_session(workspace, session_id)
+    _collection, query_plans = application.load_frozen_contracts(workspace, session_id)
+    foreign_proxy, yt_dlp_runtime = _prepare_foreign_runtime(
+        query_plans.platform_scope,
+        session.selected_yt_dlp_version,
+    )
+    if yt_dlp_runtime is not None and session.selected_yt_dlp_version is None:
+        session = application.freeze_yt_dlp_version(
+            workspace,
+            session_id,
+            yt_dlp_runtime.version,
+        )
+
     _execute_async(
         lambda: _workflow(
-            progress=_CliProgressReporter(progress_format)
+            progress=_CliProgressReporter(progress_format),
+            platform_scope=query_plans.platform_scope,
+            auth_profile=session.constraints.auth_profile,
+            foreign_proxy=foreign_proxy,
+            yt_dlp_runtime=yt_dlp_runtime,
         ).run(
             workspace,
             session_id,
@@ -728,7 +941,11 @@ def auth_status_command(
     """Probe one platform without opening an interactive login."""
 
     _execute_async(
-        lambda: _authentication().probe(platform, auth_profile, browser_channel)
+        lambda: _authentication_for_platforms(
+            (platform,), auth_profile=auth_profile
+        ).probe(
+            platform, auth_profile, browser_channel
+        )
     )
 
 
@@ -751,7 +968,9 @@ def auth_login_command(
     """Ensure one platform is authenticated, opening a browser when needed."""
 
     async def operation() -> dict[str, Any]:
-        selection = await _authentication().ensure_authenticated(
+        selection = await _authentication_for_platforms(
+            (platform,), auth_profile=auth_profile
+        ).ensure_authenticated(
             (platform,),
             auth_profile,
             auth_wait_seconds,
@@ -884,8 +1103,13 @@ def media_fetch_high_quality_command(
     """Idempotently fetch one complete high-quality media unit."""
 
     async def operation() -> BaseModel:
-        session = _application().get_session(workspace, session_id)
-        application = _media_application()
+        sessions = _application()
+        session = sessions.get_session(workspace, session_id)
+        _collection, query_plans = sessions.load_frozen_contracts(workspace, session_id)
+        application = _media_application(
+            platform_scope=query_plans.platform_scope,
+            auth_profile=session.constraints.auth_profile,
+        )
         platform = application.platform_for_media(
             workspace,
             session_id,
@@ -895,7 +1119,7 @@ def media_fetch_high_quality_command(
             raise SessionStateError(
                 "The session has not frozen a successful browser channel."
             )
-        await _authentication().ensure_authenticated(
+        await _authentication_for_platforms((platform,)).ensure_authenticated(
             (platform,),
             session.constraints.auth_profile,
             session.constraints.auth_wait_seconds,

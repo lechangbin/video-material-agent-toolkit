@@ -17,7 +17,7 @@ from material_collector.core.errors import SessionStateError
 from material_collector.core.media import BrowserChannel, Platform
 
 OUTPUT_SCHEMA_VERSION = "1.0"
-SESSION_SCHEMA_VERSION = 5
+SESSION_SCHEMA_VERSION = 6
 SUPPORTED_SESSION_SCHEMA_VERSIONS = frozenset({SESSION_SCHEMA_VERSION})
 CONTROL_DIRECTORY = ".material-collector"
 SESSIONS_DIRECTORY = "sessions"
@@ -89,6 +89,7 @@ class SessionView(_OutputModel):
     platform_scope: tuple[Platform, ...]
     constraints: RuntimeConstraints
     selected_browser_channel: BrowserChannel | None = None
+    selected_yt_dlp_version: str | None = None
     segments: tuple[SessionSegmentView, ...]
     warnings: tuple[WarningView, ...]
     result_path: str | None
@@ -132,6 +133,13 @@ class SessionStore(Protocol):
         channel: BrowserChannel,
     ) -> SessionView: ...
 
+    def freeze_yt_dlp_version(
+        self,
+        workspace: Path,
+        session_id: str,
+        version: str,
+    ) -> SessionView: ...
+
 
 class SessionApplication:
     """Interface used by CLI and workflows for session lifecycle operations."""
@@ -168,3 +176,14 @@ class SessionApplication:
         if channel is BrowserChannel.AUTO:
             raise SessionStateError("The automatic browser channel cannot be frozen.")
         return self._store.freeze_browser_channel(workspace, session_id, channel)
+
+    def freeze_yt_dlp_version(
+        self,
+        workspace: Path,
+        session_id: str,
+        version: str,
+    ) -> SessionView:
+        normalized = normalize_inline_text(version)
+        if not normalized or len(normalized) > 128:
+            raise SessionStateError("The yt-dlp runtime version is invalid.")
+        return self._store.freeze_yt_dlp_version(workspace, session_id, normalized)

@@ -41,7 +41,7 @@
 
 - `session.sqlite3` 是阶段、幂等、恢复和内部关系状态的权威来源。
 - `collection-result.json` 是面向 Agent、人工用户和下游程序的权威来源清单，也是从已提交内部状态原子发布的对外投影。
-- 规范化 QueryPlans 2.0 快照冻结 `platform_scope`；`status`、`resume` 和
+- 规范化 QueryPlans 3.0 快照冻结 `platform_scope` 和逐平台查询分支；`status`、`resume` 和
   `collection-result.json` 都从该会话边界投影范围。
 - 会话恢复以 SQLite 状态及所引用产物的完整性校验为准；对外清单缺失或过期时应从已提交状态重新发布，不得反向猜测未提交的内部阶段。
 - 0.2.0 只读取当前会话数据库版本。旧会话返回结构化版本不兼容错误，原数据库和

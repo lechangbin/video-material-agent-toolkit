@@ -68,24 +68,25 @@ def _create_session(tmp_path: Path, session_id: str = "ses_runtime_001") -> tupl
     _write_json(
         plans_path,
         {
-            "schema_version": "2.0",
+            "schema_version": "3.0",
             "platform_scope": ["bilibili", "douyin", "xiaohongshu"],
             "plans": [
                 {
                     "segment_id": "seg_a",
                     "visual_strategy": "寻找相关画面",
                     "required_visual_facets": [{"facet_id": "facet_a", "description": "测试画面"}],
-                    "initial_queries": [
+                    "platform_branches": [
                         {
-                            "query_id": "query_a",
-                            "text": "测试",
-                            "target_platforms": [
-                                "bilibili",
-                                "douyin",
-                                "xiaohongshu",
-                            ],
-                            "facet_ids": ["facet_a"],
+                            "platform": platform,
+                            "language": "zh-CN",
+                            "queries": [{
+                                "query_id": f"query_a_{platform}",
+                                "text": "测试",
+                                "facet_ids": ["facet_a"],
+                                "budget": 20,
+                            }],
                         }
+                        for platform in ("bilibili", "douyin", "xiaohongshu")
                     ],
                 }
             ],

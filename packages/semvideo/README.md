@@ -44,7 +44,7 @@ Semvideo 只负责视频理解，不实现查询、embedding、相关性评分�
 `segment export` 向任务包外导出命中片段，该命令不会改写已完成任务包。需要
 一次性生成并登记全部正式子视频时显式使用 `process --render`。
 
-项目借鉴 [`claude-real-video`](https://github.com/HUANGCHIHHUNGLeo/claude-real-video) 的本地视频预处理思路，包括场景感知抽帧、帧去重、字幕优先、Whisper 回退、时间戳保留和本地检查页面。第三方项目只负责或启发“证据提取”阶段；语义边界、合并计划、正式摘要、任务恢复和持久化由本项目自行实现。
+正式 v0.3 工作流通过受管 CRV Bridge 调用 [`claude-real-video`](https://github.com/HUANGCHIHHUNGLeo/claude-real-video)，完成场景感知抽帧、去重和转写。CRV 仅接收本地分析代理视频；语义边界、镜头语言、结果验证、任务恢复和持久化仍由本项目负责。
 
 ## 设计文档
 
@@ -75,7 +75,7 @@ semvideo --version --json
 也可以安装已经构建的 wheel：
 
 ```powershell
-python -m pip install .\dist\semvideo-0.1.4-py3-none-any.whl
+python -m pip install .\dist\semvideo-0.2.0-py3-none-any.whl
 ```
 
 开发环境：
@@ -160,14 +160,14 @@ Copy-Item -Recurse .\skills\semvideo `
   "$env:USERPROFILE\.codex\skills\semvideo"
 ```
 
-CLI 与 Skill 必须成对使用：当前均为 `0.1.4`，Skill 协议版本为 `1`。
+CLI 与 Skill 必须成对使用：当前均为 `0.2.0`，Skill 协议版本为 `1`。
 Skill 会先运行 `scripts/resolve_semvideo.py`，发现并验证 CLI 的绝对路径，因此
 目标 Agent 不需要继承用户级 Python Scripts 的 PATH。安装副本不得直接修改；
 所有变更先落到仓库 `skills/semvideo/`，再重新复制或打包。
 
 ## 原型保留策略
 
-可抛弃原型仍保存在 `prototypes/real_video_semantics/`，只用于对照旧实验和 CRV 思路。正式包 `src/semvideo/` 不依赖 `claude-real-video`。在指定真实样例通过正式云端模型、全量渲染和人工观看验收后，删除原型运行代码及其可选依赖。
+可抛弃原型仍保存在 `prototypes/real_video_semantics/`，只用于对照旧实验。正式包不导入 CRV 源码，而是按任务冻结经过合约测试的受管稳定版运行时。
 
 正式 Agent Skill 已加入本仓库 `skills/semvideo/` 并与 CLI 同版本维护。Skill
 只调用公开 CLI，不直接操作任务文件；真实样例的人工边界确认仍决定何时删除原型，

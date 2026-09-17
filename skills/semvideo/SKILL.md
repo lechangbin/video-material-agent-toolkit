@@ -57,7 +57,7 @@ python <this-skill-directory>/scripts/resolve_semvideo.py
 ```
 
 The resolver does not rely on the Agent's isolated `PATH`; it validates
-`cli_version` `0.1.4`, workspace Schema max `1`, job Schema max `1`, and
+`cli_version` `0.2.0`, workspace Schema max `1`, job Schema max `1`, and
 `skill_protocol_version` `1`. If the user supplies a CLI location, pass it through
 the non-secret `SEMVIDEO_CLI` environment variable.
 
@@ -112,16 +112,28 @@ Doctor. To return to the repository baseline, run the same command with
 For Agent automation, submit asynchronously and retain the returned `job_id`:
 
 ```powershell
-<semvideo> process <video> --workspace <root> --json
+<semvideo> process <video> --workspace <root> `
+  --subagent-context-tokens <effective-context-tokens> `
+  --subagent-slots <available-generic-subagent-slots> --json
 ```
 
 The source video is copied into the workspace automatically. Submission success
 means the background Worker started; it does not mean processing completed.
 
+The context and capacity values are mandatory Agent-host facts, not model-name
+guesses. Obtain them before automatic submission. If effective context or generic
+subagent capacity is unavailable, stop before `process`; do not use the legacy
+direct-model understanding path. Semvideo maps context to the approved `128k`,
+`256k`, `512k`, or `1m` evidence tier and stops if the human-approved benchmark
+profile is absent. CRV supplies global evidence; Semvideo still supplies its own
+shot-scale, viewpoint, and camera-motion annotations to the subagent request.
+
 Use `--render` only when all final clips are required. Otherwise keep lazy rendering:
 
 ```powershell
-<semvideo> process <video> --workspace <root> --render --json
+<semvideo> process <video> --workspace <root> --render `
+  --subagent-context-tokens <effective-context-tokens> `
+  --subagent-slots <available-generic-subagent-slots> --json
 ```
 
 Use `--idempotency-key <stable-key>` when the same request might be submitted again.
@@ -130,7 +142,9 @@ Do not create an idempotency key from mutable timestamps.
 For a foreground wait, keep stdout machine-readable and suppress progress:
 
 ```powershell
-<semvideo> process <video> --workspace <root> --wait --quiet --json
+<semvideo> process <video> --workspace <root> --wait --quiet `
+  --subagent-context-tokens <effective-context-tokens> `
+  --subagent-slots <available-generic-subagent-slots> --json
 ```
 
 ## Observe and recover
@@ -147,6 +161,33 @@ diagnosis, retrieve structured logs without following:
 ```powershell
 <semvideo> job logs <job-id> --workspace <root> --json
 ```
+
+`awaiting_subagent` is a durable action checkpoint, not a terminal failure. Read
+the returned `request_path` and schedule fresh isolated observers plus one
+coordinator using only that immutable request and its `context_root`. The
+coordinator must return `video-understanding-agent-result/v1`; it must cite the
+request anchors, CRV evidence IDs, and Semvideo cinematography references.
+
+Import the result only through the public boundary:
+
+```powershell
+<semvideo> job subagent-import <job-id> --result <result.json> `
+  --workspace <root> --json
+```
+
+If validation returns `repair_required`, create a fresh subagent with the
+validator errors and obtain the next immutable request:
+
+```powershell
+<semvideo> job subagent-request <job-id> `
+  --effective-context-tokens <effective-context-tokens> `
+  --subagent-slots <available-generic-subagent-slots> --repair `
+  --workspace <root> --json
+```
+
+The parent may repeat this correction at most twice. It must not edit a result.
+After `ready_to_resume`, rerun the context gate and call `job resume`. A third
+invalid result produces a durable final error report and `failed` state.
 
 Follow the structured `failure.recovery` value:
 

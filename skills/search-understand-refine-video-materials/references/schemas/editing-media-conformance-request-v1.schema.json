@@ -1,0 +1,227 @@
+{
+  "$defs": {
+    "EditingDeliveryProfile": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "editing-delivery-profile/v1",
+          "default": "editing-delivery-profile/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "container": {
+          "const": "mp4",
+          "default": "mp4",
+          "title": "Container",
+          "type": "string"
+        },
+        "video_codec": {
+          "const": "h264",
+          "default": "h264",
+          "title": "Video Codec",
+          "type": "string"
+        },
+        "video_encoder": {
+          "const": "libx264",
+          "default": "libx264",
+          "title": "Video Encoder",
+          "type": "string"
+        },
+        "video_profile": {
+          "const": "high",
+          "default": "high",
+          "title": "Video Profile",
+          "type": "string"
+        },
+        "pixel_format": {
+          "const": "yuv420p",
+          "default": "yuv420p",
+          "title": "Pixel Format",
+          "type": "string"
+        },
+        "width": {
+          "const": 1920,
+          "default": 1920,
+          "title": "Width",
+          "type": "integer"
+        },
+        "height": {
+          "const": 1080,
+          "default": 1080,
+          "title": "Height",
+          "type": "integer"
+        },
+        "sample_aspect_ratio": {
+          "const": "1:1",
+          "default": "1:1",
+          "title": "Sample Aspect Ratio",
+          "type": "string"
+        },
+        "frame_rate": {
+          "const": "30/1",
+          "default": "30/1",
+          "title": "Frame Rate",
+          "type": "string"
+        },
+        "gop_frames": {
+          "const": 60,
+          "default": 60,
+          "title": "Gop Frames",
+          "type": "integer"
+        },
+        "video_track_time_scale": {
+          "const": 90000,
+          "default": 90000,
+          "title": "Video Track Time Scale",
+          "type": "integer"
+        },
+        "color_primaries": {
+          "const": "bt709",
+          "default": "bt709",
+          "title": "Color Primaries",
+          "type": "string"
+        },
+        "color_transfer": {
+          "const": "bt709",
+          "default": "bt709",
+          "title": "Color Transfer",
+          "type": "string"
+        },
+        "color_space": {
+          "const": "bt709",
+          "default": "bt709",
+          "title": "Color Space",
+          "type": "string"
+        },
+        "audio_codec": {
+          "const": "aac",
+          "default": "aac",
+          "title": "Audio Codec",
+          "type": "string"
+        },
+        "audio_profile": {
+          "const": "LC",
+          "default": "LC",
+          "title": "Audio Profile",
+          "type": "string"
+        },
+        "audio_sample_rate": {
+          "const": 48000,
+          "default": 48000,
+          "title": "Audio Sample Rate",
+          "type": "integer"
+        },
+        "audio_channels": {
+          "const": 2,
+          "default": 2,
+          "title": "Audio Channels",
+          "type": "integer"
+        },
+        "audio_bit_rate": {
+          "const": 192000,
+          "default": 192000,
+          "title": "Audio Bit Rate",
+          "type": "integer"
+        }
+      },
+      "title": "EditingDeliveryProfile",
+      "type": "object"
+    },
+    "ImmutableSourceAsset": {
+      "additionalProperties": false,
+      "properties": {
+        "asset_id": {
+          "title": "Asset Id",
+          "type": "string"
+        },
+        "sha256": {
+          "title": "Sha256",
+          "type": "string"
+        },
+        "path": {
+          "format": "path",
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "asset_id",
+        "sha256",
+        "path"
+      ],
+      "title": "ImmutableSourceAsset",
+      "type": "object"
+    },
+    "SelectedRange": {
+      "additionalProperties": false,
+      "properties": {
+        "clip_id": {
+          "title": "Clip Id",
+          "type": "string"
+        },
+        "start_seconds": {
+          "minimum": 0,
+          "title": "Start Seconds",
+          "type": "number"
+        },
+        "end_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "End Seconds",
+          "type": "number"
+        }
+      },
+      "required": [
+        "clip_id",
+        "start_seconds",
+        "end_seconds"
+      ],
+      "title": "SelectedRange",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "editing-media-conformance-request/v1",
+      "default": "editing-media-conformance-request/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "request_id": {
+      "title": "Request Id",
+      "type": "string"
+    },
+    "idempotency_key": {
+      "title": "Idempotency Key",
+      "type": "string"
+    },
+    "source": {
+      "$ref": "#/$defs/ImmutableSourceAsset"
+    },
+    "ranges": {
+      "items": {
+        "$ref": "#/$defs/SelectedRange"
+      },
+      "minItems": 1,
+      "title": "Ranges",
+      "type": "array"
+    },
+    "output_directory": {
+      "format": "path",
+      "title": "Output Directory",
+      "type": "string"
+    },
+    "profile": {
+      "$ref": "#/$defs/EditingDeliveryProfile"
+    }
+  },
+  "required": [
+    "request_id",
+    "idempotency_key",
+    "source",
+    "ranges",
+    "output_directory"
+  ],
+  "title": "EditingMediaConformanceRequest",
+  "type": "object"
+}

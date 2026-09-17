@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "media-conformance"
+version = "0.3.0"
+description = "Deterministic editing-media conformance and concat compatibility CLI."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+requires-python = ">=3.14,<3.15"
+dependencies = [
+  "pydantic>=2.13,<3",
+  "typer>=0.27,<1",
+]
+
+[project.scripts]
+media-conformance = "media_conformance.cli:main"
+
+[dependency-groups]
+dev = [
+  "mypy>=1.19,<2",
+  "pytest>=9.1,<10",
+  "ruff>=0.14,<1",
+]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/media_conformance"]

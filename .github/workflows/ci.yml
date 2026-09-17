@@ -32,6 +32,14 @@ jobs:
           Set-Location packages/semvideo
           python -m pip install -e ".[dev]"
           python -m pytest -q
+      - name: Test media-conformance
+        shell: pwsh
+        run: |
+          Set-Location packages/media-conformance
+          uv sync
+          uv run pytest
+          uv run ruff check .
+          uv run mypy src
       - name: Build release artifacts
         shell: pwsh
         run: .\scripts\build-release.ps1
@@ -48,7 +56,8 @@ jobs:
         run: docker compose config --quiet
       - name: Build toolkit image
         run: docker build --tag video-material-agent-toolkit:test .
-      - name: Smoke-test both CLIs
+      - name: Smoke-test all CLIs
         run: |
           docker run --rm video-material-agent-toolkit:test material-collector --help
           docker run --rm video-material-agent-toolkit:test semvideo --version --json
+          docker run --rm video-material-agent-toolkit:test media-conformance --help

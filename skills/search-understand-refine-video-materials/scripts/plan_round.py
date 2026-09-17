@@ -17,7 +17,7 @@ DECISION_SCHEMA = "video-material-gap-decision/v1"
 BATCH_SCHEMA = "video-material-understanding-batch/v2"
 ROUND_SCHEMA = "video-material-search-round/v1"
 SELECTION_SCHEMA = "segment-selection-output/v2"
-PLATFORMS = ("bilibili", "douyin", "xiaohongshu")
+PLATFORMS = ("bilibili", "douyin", "xiaohongshu", "youtube", "tiktok")
 
 
 class RoundPlanError(RuntimeError):
@@ -46,7 +46,7 @@ def _queryplans_version_error(received_version: Any) -> RoundPlanError:
         details={
             "document": "query_plans",
             "received_version": received_version,
-            "supported_versions": ["2.0"],
+            "supported_versions": ["3.0"],
         },
     )
 
@@ -113,7 +113,7 @@ def _source_contracts(
         semantic_input["initial_query_plans_path"],
         semantic_input["initial_query_plans_sha256"],
     )
-    if query_plans.get("schema_version") != "2.0":
+    if query_plans.get("schema_version") != "3.0":
         raise _queryplans_version_error(query_plans.get("schema_version"))
     segments = collection_input.get("segments")
     plans = query_plans.get("plans")
@@ -165,23 +165,27 @@ def _validate_next_queries(
             raise RoundPlanError("next query entries must be objects")
         query_id = query.get("query_id")
         text = query.get("text")
-        targets = query.get("target_platforms")
+        platform = query.get("platform")
+        language = query.get("language")
         facet_ids = query.get("facet_ids")
+        budget = query.get("budget", 20)
         if (
             not isinstance(query_id, str)
             or not isinstance(text, str)
             or not text.strip()
-            or not isinstance(targets, list)
-            or len(targets) != len(set(targets))
-            or set(targets) != set(platform_scope)
+            or platform not in platform_scope
+            or not isinstance(language, str)
+            or not language.strip()
             or not isinstance(facet_ids, list)
             or not facet_ids
             or not set(facet_ids).issubset(known_facets)
+            or not isinstance(budget, int)
+            or not 1 <= budget <= 100
         ):
             raise RoundPlanError(
-                "next query must target the complete platform scope and known facets"
+                "next query must name one in-scope platform, language, budget, and known facets"
             )
-        text_key = " ".join(text.split()).casefold()
+        text_key = f"{platform}:" + " ".join(text.split()).casefold()
         if text_key in previous_query_texts:
             raise RoundPlanError("next query repeats already-used query text")
         if query_id in seen_ids or text_key in seen_text:
@@ -192,8 +196,10 @@ def _validate_next_queries(
             {
                 "query_id": query_id,
                 "text": " ".join(text.split()),
-                "target_platforms": list(platform_scope),
+                "platform": platform,
+                "language": " ".join(language.split()),
                 "facet_ids": facet_ids,
+                "budget": budget,
             }
         )
     return normalized
@@ -218,7 +224,7 @@ def _query_history(
         if artifact_hash in artifact_hashes:
             raise RoundPlanError("previous query plan artifacts must be unique")
         artifact_hashes.add(artifact_hash)
-        if artifact.get("schema_version") != "2.0":
+        if artifact.get("schema_version") != "3.0":
             raise _queryplans_version_error(artifact.get("schema_version"))
         if artifact.get("platform_scope") != platform_scope:
             raise RoundPlanError("previous query plan platform scope does not match workflow")
@@ -234,14 +240,19 @@ def _query_history(
             or plan.get("query_plan_id") != query_plan_id
         ):
             raise RoundPlanError("previous query plan lineage does not match workflow")
-        queries = plan.get("initial_queries")
-        if not isinstance(queries, list) or not queries:
-            raise RoundPlanError("previous query plan does not contain queries")
-        for query in queries:
-            text = query.get("text") if isinstance(query, dict) else None
-            if not isinstance(text, str) or not text.strip():
-                raise RoundPlanError("previous query plan contains invalid query text")
-            history.add(" ".join(text.split()).casefold())
+        branches = plan.get("platform_branches")
+        if not isinstance(branches, list) or not branches:
+            raise RoundPlanError("previous query plan does not contain platform branches")
+        for branch in branches:
+            platform = branch.get("platform") if isinstance(branch, dict) else None
+            queries = branch.get("queries") if isinstance(branch, dict) else None
+            if platform not in platform_scope or not isinstance(queries, list):
+                raise RoundPlanError("previous query plan contains an invalid platform branch")
+            for query in queries:
+                text = query.get("text") if isinstance(query, dict) else None
+                if not isinstance(text, str) or not text.strip():
+                    raise RoundPlanError("previous query plan contains invalid query text")
+                history.add(f"{platform}:" + " ".join(text.split()).casefold())
     return history
 
 
@@ -377,8 +388,8 @@ def plan_round(
     if decision is None:
         round_number = 1
         occupied = 0
-        queries = original_plan.get("initial_queries")
-        if not isinstance(queries, list) or not queries:
+        branches = original_plan.get("platform_branches")
+        if not isinstance(branches, list) or not branches:
             raise RoundPlanError("initial query plan is invalid")
     else:
         if decision.get("schema_version") != DECISION_SCHEMA:
@@ -453,6 +464,34 @@ def plan_round(
             history,
             platform_scope,
         )
+        branches = []
+        for platform in platform_scope:
+            platform_queries = [
+                {
+                    "query_id": query["query_id"],
+                    "text": query["text"],
+                    "facet_ids": query["facet_ids"],
+                    "budget": query["budget"],
+                }
+                for query in queries
+                if query["platform"] == platform
+            ]
+            if not platform_queries:
+                raise RoundPlanError(
+                    "supplemental search must provide at least one query for every in-scope platform"
+                )
+            languages = {
+                query["language"] for query in queries if query["platform"] == platform
+            }
+            if len(languages) != 1:
+                raise RoundPlanError("one platform branch must use one language")
+            branches.append(
+                {
+                    "platform": platform,
+                    "language": languages.pop(),
+                    "queries": platform_queries,
+                }
+            )
 
     remaining_rounds = max_rounds - round_number + 1
     remaining_slots = max_videos - occupied
@@ -467,7 +506,7 @@ def plan_round(
         "segments": [segment],
     }
     round_query_plans = {
-        "schema_version": "2.0",
+        "schema_version": "3.0",
         "platform_scope": platform_scope,
         "plans": [
             {
@@ -475,7 +514,7 @@ def plan_round(
                 "segment_id": segment_id,
                 "visual_strategy": original_plan["visual_strategy"],
                 "required_visual_facets": original_plan["required_visual_facets"],
-                "initial_queries": queries,
+                "platform_branches": branches,
             }
         ],
     }

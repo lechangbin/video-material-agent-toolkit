@@ -39,10 +39,10 @@ Require:
 An existing initial QueryPlan file is optional. When it is absent, the parent Agent
 must read the full script and every theme segment, derive the visual strategy and
 required visual facets, then write one versioned QueryPlan per segment before
-initialization. Write the scope once at the top of QueryPlans 2.0 and copy the
-complete frozen scope into every initial expression. The search cap remains 20
-results for that expression on each in-scope platform. Do not reinterpret it as
-a shared multi-platform cap.
+initialization. Write the scope once at the top of QueryPlans 3.0, then write exactly one
+language-labelled branch for every in-scope platform. Give each expression its own result budget;
+the default is 20 and is never a shared multi-platform cap. Foreign branches may use different
+languages and expressions while remaining anchored to the same visual facets.
 
 ## Plan and initialize once
 
@@ -81,14 +81,17 @@ Repeat the following bounded loop:
    theme segment. Every downloaded proxy consumes the video budget, including
    fallback sources. Only `eligible_for_understanding=true` primary assets enter
    Semvideo. Reuse identical proxy hashes.
-4. **Understand new assets.** Run the Semvideo context gate. Submit only batch
+4. **Understand new assets.** Run the Semvideo context/capability gate. Submit only batch
    items without a bound job, carrying the prior round's job mappings into the
    current cumulative `understanding-jobs.json`. Use the batch's stable
    idempotency key, omit
    `--render`, and never exceed `admission.available_submission_slots`. Record each
-   successful submission with `scripts/record_understanding_job.py`. Observe and
-   recover strictly through the Semvideo Skill, rerunning the gate after every
-   state-changing command or terminal transition.
+   successful submission with `scripts/record_understanding_job.py`. At
+   `awaiting_subagent`, export the immutable request through Semvideo, schedule fresh isolated
+   observer subagents and one coordinator using only that request, and import their result through
+   Semvideo. A validation failure may create at most two fresh repair attempts; the parent passes
+   validator errors but never edits a result. Observe and recover strictly through the Semvideo
+   Skill, rerunning the gate after every state-changing command or terminal transition.
 5. **Build complete catalogs.** Run `scripts/collect_semvideo_catalog.py`.
    Failed or incomplete jobs remain recorded but contribute no candidates. If no
    complete catalog exists, stop this segment as `understanding_failed`; do not
@@ -101,7 +104,19 @@ Repeat the following bounded loop:
    current theme segment, required visual facets, and selected Top-K. Write the
    versioned gap decision defined in the workflow contract. Selection-stage
    coverage is evidence, not the final decision.
-8. **Stop or refine.** If sufficient, complete the theme segment. If insufficient
+8. **Conform selected ranges.** After final Top-K selection and high-quality retrieval, build the
+   versioned request for each selected source asset with
+   `scripts/prepare_conformance_request.py`, giving it the frozen workflow, the
+   selected Top-K result, a `selected-source-ranges/v1` ranges document with half-open
+   ranges over one immutable high-quality source, and an absolute output directory.
+   The bridge hashes the source asset, derives deterministic request and idempotency
+   keys from the workflow/selection/ranges lineage, and emits one
+   `editing-media-conformance-request/v1` matching the bundled schema and example.
+   Invoke only `media-conformance prepare --request <path>` with the returned command.
+   Continue only when its Assembly Set reports both
+   `compatible=true` and `packet_concat_verified=true`; preserve a structured failure and stop
+   before concat otherwise.
+9. **Stop or refine.** If sufficient, complete the theme segment. If insufficient
    and budget remains, create targeted next queries anchored to the original
    script and facet IDs, then start a new Collector session. If rounds or video
    slots are exhausted, finish as `stopped_with_gaps`. Persist every segment

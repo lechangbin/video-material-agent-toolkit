@@ -67,6 +67,9 @@ class SemvideoError(Exception):
         exit_code: int | None = None,
     ) -> None:
         super().__init__(message)
+        self.provider_attempts: list[dict[str, Any]] = []
+        self.model_attempts: list[dict[str, Any]] = []
+        self.repair_attempted = False
         self.payload = ErrorPayload(
             code=code,
             category=category,
@@ -88,7 +91,7 @@ class SemvideoError(Exception):
         job_id: str | None = None,
         attempt_id: str | None = None,
         stage: str | None = None,
-    ) -> "SemvideoError":
+    ) -> SemvideoError:
         update = {
             "job_id": job_id or self.payload.job_id,
             "attempt_id": attempt_id or self.payload.attempt_id,

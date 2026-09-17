@@ -11,8 +11,9 @@ from typing import Any, NoReturn
 
 import typer
 from rich.console import Console
-from typer._click.exceptions import Exit as ClickExit
 from typer._click.exceptions import UsageError
+
+ClickExit = typer.Exit
 
 from semvideo import (
     JOB_SCHEMA_VERSION,
@@ -25,6 +26,7 @@ from semvideo.application.configuration import (
     set_media_tools,
 )
 from semvideo.application.diagnostics import run_doctor
+from semvideo.application.evidence_benchmark import build_report
 from semvideo.application.jobs import (
     cancel_job,
     get_job_admission,
@@ -43,10 +45,16 @@ from semvideo.application.queries import (
     list_shots,
     read_job_logs,
 )
+from semvideo.application.subagent_handoff import (
+    approve_profiles,
+    import_result,
+    prepare_request,
+)
 from semvideo.application.task_store import JobNotFoundError
 from semvideo.application.workspace import (
     InvalidWorkspaceError,
     WorkspaceNotFoundError,
+    WorkspacePaths,
     discover_workspace,
     initialize_workspace,
     read_workspace_marker,
@@ -142,7 +150,7 @@ def _native_cli_path(path: str | Path) -> Path:
     return Path(path)
 
 
-def _workspace(path: str | Path | None):
+def _workspace(path: str | Path | None) -> WorkspacePaths:
     return (
         discover_workspace(explicit=_native_cli_path(path))
         if path
@@ -237,6 +245,10 @@ def process_command(
     wait: bool = typer.Option(False, "--wait"),
     quiet: bool = typer.Option(False, "--quiet"),
     idempotency_key: str | None = typer.Option(None, "--idempotency-key"),
+    subagent_context_tokens: int | None = typer.Option(
+        None, "--subagent-context-tokens"
+    ),
+    subagent_slots: int | None = typer.Option(None, "--subagent-slots"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     try:
@@ -247,6 +259,8 @@ def process_command(
             profile=profile,
             render=render,
             idempotency_key=idempotency_key,
+            subagent_context_tokens=subagent_context_tokens,
+            subagent_slots=subagent_slots,
         )
         if wait:
             progress_sink = None
@@ -322,6 +336,87 @@ def job_admission(
     try:
         _emit(
             get_job_admission(_workspace(workspace)),
+            json_output=json_output,
+        )
+    except BaseException as exc:
+        _abort(exc, json_output=json_output)
+
+
+@job_app.command("subagent-request")
+def job_subagent_request(
+    job_id: str,
+    workspace: str | None = typer.Option(None, "--workspace"),
+    effective_context_tokens: int | None = typer.Option(
+        None, "--effective-context-tokens"
+    ),
+    subagent_slots: int | None = typer.Option(None, "--subagent-slots"),
+    repair: bool = typer.Option(False, "--repair"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Freeze or export one generic-subagent request checkpoint."""
+    try:
+        _emit(
+            prepare_request(
+                _workspace(workspace),
+                job_id,
+                effective_context_tokens=effective_context_tokens,
+                subagent_slots=subagent_slots,
+                repair=repair,
+            ),
+            json_output=json_output,
+        )
+    except BaseException as exc:
+        _abort(exc, json_output=json_output)
+
+
+@job_app.command("subagent-import")
+def job_subagent_import(
+    job_id: str,
+    result: str = typer.Option(..., "--result"),
+    workspace: str | None = typer.Option(None, "--workspace"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Atomically validate and import one generic-subagent result."""
+    try:
+        _emit(
+            import_result(
+                _workspace(workspace), job_id, _native_cli_path(result)
+            ),
+            json_output=json_output,
+        )
+    except BaseException as exc:
+        _abort(exc, json_output=json_output)
+
+
+@profile_app.command("approve-subagent-evidence")
+def approve_subagent_evidence(
+    input_path: str = typer.Option(..., "--input"),
+    workspace: str | None = typer.Option(None, "--workspace"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Install all four benchmark-derived evidence profiles after human approval."""
+    try:
+        _emit(
+            approve_profiles(_workspace(workspace), _native_cli_path(input_path)),
+            json_output=json_output,
+        )
+    except BaseException as exc:
+        _abort(exc, json_output=json_output)
+
+
+@profile_app.command("benchmark-subagent-evidence")
+def benchmark_subagent_evidence(
+    input_path: str = typer.Option(..., "--input"),
+    output_directory: str = typer.Option(..., "--output"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Aggregate reproducible four-tier measurements without approving them."""
+    try:
+        _emit(
+            build_report(
+                _native_cli_path(input_path),
+                _native_cli_path(output_directory),
+            ),
             json_output=json_output,
         )
     except BaseException as exc:

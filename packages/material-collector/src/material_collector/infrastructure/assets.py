@@ -115,6 +115,7 @@ class WorkspaceAssetStore:
             duration_seconds=fetched.duration_seconds,
             width=fetched.width,
             height=fetched.height,
+            geometry_assessment=fetched.geometry_assessment,
         )
 
     def resolve(self, asset: AssetRecord) -> Path:

@@ -7,7 +7,6 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-
 Viewpoint = Literal[
     "aerial",
     "ground",
@@ -84,7 +83,7 @@ class ShotRecord(StrictModel):
     right_boundary: ShotBoundary | None = None
 
     @model_validator(mode="after")
-    def validate_range(self) -> "ShotRecord":
+    def validate_range(self) -> ShotRecord:
         if self.end_ms <= self.start_ms:
             raise ValueError("shot end_ms must be greater than start_ms")
         if (
@@ -103,7 +102,7 @@ class ShotTimeline(StrictModel):
     shots: list[ShotRecord] = Field(min_length=1)
 
     @model_validator(mode="after")
-    def validate_timeline(self) -> "ShotTimeline":
+    def validate_timeline(self) -> ShotTimeline:
         if self.shots[0].start_ms != 0:
             raise ValueError("shot timeline must start at zero")
         if self.shots[-1].end_ms != self.duration_ms:
@@ -133,7 +132,7 @@ class CameraMotion(StrictModel):
     confidence: float = Field(ge=0.0, le=1.0)
 
     @model_validator(mode="after")
-    def validate_range(self) -> "CameraMotion":
+    def validate_range(self) -> CameraMotion:
         if self.end_ms <= self.start_ms:
             raise ValueError("camera motion end_ms must be greater than start_ms")
         return self
@@ -188,7 +187,7 @@ class ShotEvidenceBundle(StrictModel):
     motion_measurement: GlobalMotionMeasurement
 
     @model_validator(mode="after")
-    def validate_contact_sheets(self) -> "ShotEvidenceBundle":
+    def validate_contact_sheets(self) -> ShotEvidenceBundle:
         if not self.contact_sheet_paths:
             self.contact_sheet_paths = [self.contact_sheet_path]
         if self.contact_sheet_paths[0] != self.contact_sheet_path:

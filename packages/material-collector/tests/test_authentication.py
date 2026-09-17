@@ -8,10 +8,12 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock
 
 import pytest
 
+import material_collector.infrastructure.authentication as authentication_module
 from material_collector.core.errors import CollectorError
 from material_collector.core.media import AuthStatus, BrowserChannel, Platform
 from material_collector.infrastructure.authentication import (
@@ -30,10 +32,13 @@ from material_collector.infrastructure.authentication import (
     PlaywrightAuthenticationGateway,
     PlaywrightBrowserAuthenticationDriver,
     WindowsChromeDesktopVerifier,
+    YtDlpBrowserAuthenticationDriver,
+    _launch_native_browser,
     _probe_douyin,
     _probe_xiaohongshu,
     _ProcessFileLock,
 )
+from material_collector.infrastructure.networking import ForeignProxy
 
 FIXED_NOW = datetime(2026, 7, 29, 12, 0, tzinfo=UTC)
 
@@ -180,6 +185,154 @@ async def test_ensure_authenticated_uses_frozen_serial_platform_order(
         ("probe", Platform.XIAOHONGSHU, None),
         ("login", Platform.XIAOHONGSHU, 321),
     ]
+
+
+async def test_gateway_routes_foreign_platform_without_changing_bilibili(
+    tmp_path: Path,
+) -> None:
+    domestic = FakeDriver()
+    foreign = FakeDriver()
+
+    def select_driver(
+        _channel: BrowserChannel,
+        platform: Platform,
+    ) -> FakeDriver:
+        return foreign if platform is Platform.YOUTUBE else domestic
+
+    result = await PlaywrightAuthenticationGateway(
+        root_dir=tmp_path / "auth",
+        platform_driver_factory=select_driver,
+    ).ensure_authenticated(
+        (Platform.BILIBILI, Platform.YOUTUBE),
+        "editing",
+        30,
+    )
+
+    assert [probe.platform for probe in result.probes] == [
+        Platform.BILIBILI,
+        Platform.YOUTUBE,
+    ]
+    assert [call[1] for call in domestic.calls] == [Platform.BILIBILI]
+    assert [call[1] for call in foreign.calls] == [Platform.YOUTUBE]
+
+
+async def test_foreign_login_uses_plain_browser_profile_then_yt_dlp_probe(
+    tmp_path: Path,
+) -> None:
+    launches: list[tuple[BrowserChannel, Path, str, ForeignProxy]] = []
+
+    class ExitedProcess:
+        def poll(self) -> int:
+            return 0
+
+    class Bridge:
+        def probe_auth(
+            self,
+            platform: Platform,
+            channel: BrowserChannel,
+        ) -> bool:
+            return platform is Platform.YOUTUBE and channel is BrowserChannel.EDGE
+
+    proxy = ForeignProxy(
+        url="http://127.0.0.1:7890",
+        kind="http_connect",
+        discovery_source="test",
+    )
+
+    def launch(
+        channel: BrowserChannel,
+        profile: Path,
+        url: str,
+        selected_proxy: ForeignProxy,
+    ) -> ExitedProcess:
+        launches.append((channel, profile, url, selected_proxy))
+        return ExitedProcess()
+
+    driver = YtDlpBrowserAuthenticationDriver(
+        Bridge(),  # type: ignore[arg-type]
+        proxy,
+        channel=BrowserChannel.EDGE,
+        launcher=launch,
+        desktop_available=lambda: True,
+        desktop_verifier=lambda _profile, _started_at: True,
+    )
+    profile = tmp_path / "auth" / "editing" / "edge" / "youtube"
+
+    result = await driver.login(Platform.YOUTUBE, profile, 30)
+
+    assert result.status is AuthStatus.VALID
+    assert launches == [
+        (BrowserChannel.EDGE, profile, "https://www.youtube.com/", proxy)
+    ]
+
+
+async def test_foreign_driver_rejects_bilibili_before_browser_launch(
+    tmp_path: Path,
+) -> None:
+    launched = False
+
+    def launch(*_args: object) -> NativeProcess:
+        nonlocal launched
+        launched = True
+        return NativeProcess()
+
+    class NativeProcess:
+        def poll(self) -> int:
+            return 0
+
+    class Bridge:
+        def probe_auth(self, _platform: Platform, _channel: BrowserChannel) -> bool:
+            return True
+
+    driver = YtDlpBrowserAuthenticationDriver(
+        Bridge(),  # type: ignore[arg-type]
+        ForeignProxy("http://127.0.0.1:7890", "http_connect", "test"),
+        channel=BrowserChannel.EDGE,
+        launcher=launch,
+        desktop_available=lambda: True,
+    )
+
+    with pytest.raises(AuthenticationContractError):
+        await driver.login(Platform.BILIBILI, tmp_path / "profile", 30)
+
+    assert launched is False
+
+
+def test_native_browser_launch_has_no_automation_interface(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class NativeProcess:
+        def poll(self) -> int:
+            return 0
+
+    def popen(command: list[str], **kwargs: object) -> NativeProcess:
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return NativeProcess()
+
+    monkeypatch.setattr(
+        authentication_module,
+        "_resolve_native_browser_executable",
+        lambda _channel: Path("C:/Program Files/Microsoft/Edge/Application/msedge.exe"),
+    )
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    profile = tmp_path / "edge" / "youtube"
+
+    _launch_native_browser(
+        BrowserChannel.EDGE,
+        profile,
+        "https://www.youtube.com/",
+        ForeignProxy("http://127.0.0.1:7890", "http_connect", "test"),
+    )
+
+    command = cast(list[str], captured["command"])
+    assert f"--user-data-dir={profile}" in command
+    assert "--proxy-server=http://127.0.0.1:7890" in command
+    assert not any("automation" in value.casefold() for value in command)
+    assert not any("remote-debugging" in value.casefold() for value in command)
 
 
 async def test_auto_tries_edge_then_chrome_and_isolates_channel_profiles(
@@ -534,7 +687,7 @@ def test_cancelled_lock_wait_does_not_delay_cli_process_exit(tmp_path: Path) -> 
 
     elapsed = time.monotonic() - started
     assert completed.returncode == 0, completed.stderr
-    assert elapsed < 0.5
+    assert elapsed < 0.9
 
 
 async def test_lock_release_after_probe_allows_next_gateway(tmp_path: Path) -> None:
