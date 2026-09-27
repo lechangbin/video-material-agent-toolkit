@@ -32,6 +32,9 @@ assets.
 - Semvideo does not own platform search, authentication, or download behavior.
 - Cross-package orchestration connects both contexts through versioned files and
   explicit CLI contracts; it does not replace either package's authoritative state.
+- Cross-package orchestration owns Top-K selection policy, local vector artifacts,
+  and the common selection result consumed by gap assessment. Semvideo does not
+  rank candidates for a theme segment.
 - Semvideo owns immutable video-understanding subagent requests and validates imported
   results. The orchestration Skill owns scheduling generic isolated subagents and
   cannot write Semvideo state directly.

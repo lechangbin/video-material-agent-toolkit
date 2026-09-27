@@ -167,14 +167,27 @@ try {
     Refresh-ProcessPath
     $missingDependencies = @(Get-MissingDependencies)
     $resolvedBrowserChannel = Resolve-BrowserChannel
+    $embeddingCheck = $null
+    $detectedPython = Resolve-Python314
+    if ($null -ne $detectedPython) {
+        $embeddingCheckOutput = @(
+            & (Join-Path $PSScriptRoot 'install-embedding-model.ps1') `
+                -PythonExecutable $detectedPython -CheckOnly
+        )
+        $embeddingCheck = ($embeddingCheckOutput -join [Environment]::NewLine) | ConvertFrom-Json
+    }
 
     if ($CheckOnly) {
         [ordered]@{
             schema_version = 1
-            status = if ($missingDependencies.Count -eq 0) { 'ready' } else { 'missing_dependencies' }
-            missing_dependencies = @($missingDependencies | Select-Object -ExpandProperty name)
+            status = if ($missingDependencies.Count -eq 0 -and $null -ne $embeddingCheck -and $embeddingCheck.status -eq 'ready') { 'ready' } else { 'missing_dependencies' }
+            missing_dependencies = @(
+                $missingDependencies | Select-Object -ExpandProperty name
+                if ($null -ne $embeddingCheck -and $embeddingCheck.status -ne 'ready') { 'embedding_model' }
+            )
             browser_channel_requested = $BrowserChannel
             browser_channel_resolved = $resolvedBrowserChannel
+            embedding = $embeddingCheck
             repository = $Repository
         } | ConvertTo-Json -Depth 4
         exit 0
@@ -247,6 +260,15 @@ try {
         $toolInstallResult = ($installerOutput -join [Environment]::NewLine) | ConvertFrom-Json
     }
 
+    $embeddingInstallOutput = @(
+        & (Join-Path $PSScriptRoot 'install-embedding-model.ps1') `
+            -PythonExecutable $pythonExecutable
+    )
+    $embeddingInstall = ($embeddingInstallOutput -join [Environment]::NewLine) | ConvertFrom-Json
+    if ($embeddingInstall.status -ne 'ready') {
+        throw 'Offline embedding model installation did not reach ready state.'
+    }
+
     $skillInstallStatus = 'skipped'
     if (-not $SkipSkills) {
         $npxCommand = Get-Command npx.cmd -ErrorAction SilentlyContinue
@@ -281,6 +303,7 @@ try {
         release_tag = $resolvedReleaseTag
         system_packages_installed = @($installedPackages)
         cli_tools = $toolInstallResult
+        embedding = $embeddingInstall
         browser_channel_requested = $BrowserChannel
         browser_channel_resolved = if ($null -ne $toolInstallResult) {
             $toolInstallResult.browser_channel_resolved

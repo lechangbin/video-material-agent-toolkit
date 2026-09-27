@@ -284,6 +284,19 @@ def _validate_selection_evidence(
     if hashlib.sha256(content).hexdigest() != expected_hash:
         raise RoundPlanError("selection result hash does not match gap evidence")
     selection = _load_object(path)
+    semantic = workflow.get("semantic_input")
+    if not isinstance(semantic, dict) or not isinstance(semantic.get("collection_input_path"), str):
+        raise RoundPlanError("workflow semantic input is invalid")
+    route_path = Path(semantic["collection_input_path"]).parent.parent / "selection-route.json"
+    route = _load_object(route_path.resolve(strict=True))
+    if (
+        route.get("schema_version") != "video-material-selection-route/v1"
+        or route.get("workflow_id") != workflow.get("workflow_id")
+        or route.get("route") not in {"subagent", "embedding"}
+        or selection.get("selection_route") != route
+        or selection.get("selection_method") != route["route"]
+    ):
+        raise RoundPlanError("selection method does not match the frozen route")
     if (
         selection.get("schema_version") != SELECTION_SCHEMA
         or selection.get("selection_id") != selection_id
@@ -330,7 +343,8 @@ def _validate_gap_structure(
             raise RoundPlanError("facet assessment entries must be objects")
         facet_id = assessment.get("facet_id")
         if (
-            facet_id not in known_facets
+            not isinstance(facet_id, str)
+            or facet_id not in known_facets
             or facet_id in assessed
             or assessment.get("status") not in {"covered", "partial", "missing"}
             or not isinstance(assessment.get("reason"), str)

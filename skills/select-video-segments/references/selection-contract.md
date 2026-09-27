@@ -134,6 +134,15 @@ asset can map to several collector media-unit IDs, but it remains one candidate 
   "max_k": 8,
   "max_k_source": "derived",
   "status": "selected",
+  "selection_method": "subagent",
+  "selection_route": {
+    "schema_version": "video-material-selection-route/v1",
+    "workflow_id": "vmw_...",
+    "requested_mode": "auto",
+    "route": "subagent",
+    "reason": "host_subagent_available",
+    "capability_status": "available"
+  },
   "selected": [
     {
       "rank": 1,
@@ -167,6 +176,16 @@ asset can map to several collector media-unit IDs, but it remains one candidate 
 Echo all request identity fields exactly. Use `status: "invalid_input"`, an empty `selected`
 array and structured `errors` for invalid lineage or catalogs. The result deliberately contains
 no `sufficient` field.
+
+The alternate offline route writes `selection_method: "embedding"`, the same
+frozen route record, and `model_fingerprint`. Its cosine scores and inferred
+facet matches remain in the audit and optional `facet_similarity_proxy_ids`;
+`covered_facet_ids` remains empty until a reasoning Agent confirms coverage.
+Overlength structured observations are encoded in repeated prefixed token
+windows and aggregated; later fields are not silently truncated. The parent
+must make the sufficiency decision from the selected
+structured observations. Neither route may silently switch after selection
+has begun.
 
 ## Parent-agent return
 

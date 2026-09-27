@@ -12,9 +12,12 @@
 - 四个遵循开放 [Agent Skills 规范](https://agentskills.io/) 的 Skills，用于把搜索、
   理解、Top-K 选择和有界补搜编排为可追踪工作流。
 
-当前开发目标为 `v0.3.0`：Material Collector `0.3.0`、Semvideo `0.2.0`、Media Conformance `0.3.0`。
+当前已发布版本为 `v0.3.0`：Material Collector `0.3.0`、Semvideo `0.2.0`、Media Conformance `0.3.0`。
 支持 Windows x64 和 CPython `>=3.14.6,<3.15`。
 Docker 部署另支持 Linux/amd64 容器，并通过本机 noVNC 页面完成交互式平台登录。
+
+`v0.4.0` 的 Top-K 向量回退正在开发，排期和发布门禁见
+[计划](docs/V0.4.0_PLAN.md)。它尚未进入上述已发布版本。
 
 > 本项目提供技术工具，不授予任何第三方视频、音乐、肖像、平台数据或商标的使用权。
 > 使用者必须遵守目标平台条款、适用法律和素材权利要求。不要使用本项目绕过访问控制、
@@ -41,7 +44,9 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap-agent.ps1
 
 该入口会检测并安装缺失的 Python 3.14、uv、Node.js、Edge/Chrome 浏览器通道和 FFmpeg，从最新 GitHub
 Release 下载并校验三个 wheel，然后通过 `npx skills` 给受支持的 Agent 安装全部四个
-Skills。它不会写入 API Key，也不会代替用户完成平台扫码登录。
+Skills。v0.4 开发分支还会下载并校验固定的离线向量模型，安装哈希锁定的独立 Python
+运行环境；实际使用以 bootstrap JSON 的 `embedding.runtime_python` 为准。它不会写入
+API Key，也不会代替用户完成平台扫码登录。
 
 只检查、不修改机器：
 

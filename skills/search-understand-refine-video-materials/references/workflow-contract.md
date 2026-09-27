@@ -10,7 +10,7 @@ tool's authoritative state.
 | --- | --- | --- |
 | `material-collector` | Search the frozen platform scope, resolve works, download 720p proxies | session SQLite and `collection-result.json` |
 | Semvideo | Understand one physical proxy and expose complete semantic segments | Semvideo public job and segment CLI |
-| `select-video-segments` | Rank one cumulative candidate catalog into a bounded Top-K | selection v2 result and audit |
+| Selection route | Rank one cumulative candidate catalog into a bounded Top-K using either the text subagent or local embeddings | selection v2 result and audit |
 | Parent Agent | Judge sufficiency against the original script and create gap queries | `gap-decision.json` |
 | This Skill | Freeze lineage, bridge schemas, enforce budgets and stop states | files under `<workflow-root>` |
 
@@ -19,6 +19,8 @@ tool's authoritative state.
 ```text
 <workflow-root>/
   workflow.json
+  selection-route.json
+  cache/embedding/
   workflow-state.json
   input/
     collection-input.json
@@ -66,6 +68,34 @@ python scripts/init_workflow.py `
   --max-rounds 3 `
   --max-videos 18
 ```
+
+The optional `--selection-mode auto|subagent_only|embedding_only` overrides the
+workspace default at `<workflow-root-parent>/selection-config.json`. Without
+either, the frozen mode is `auto`. The effective mode participates in the
+workflow identity; changing the workspace default later never changes an
+existing workflow.
+
+Before the first search round, write a capability report only after checking
+whether a fresh isolated text selection subagent can be launched on this Agent
+host. The exact JSON is:
+
+```json
+{"schema_version":"selection-subagent-capability/v1","status":"available"}
+```
+
+`status` may instead be `unavailable`, `launch_denied`, or `no_slot`. For
+`embedding_only`, omit `--capability`. Freeze the route:
+
+```powershell
+python scripts/route_selection.py `
+  --workflow <workflow-root>\workflow.json `
+  --capability <workflow-root>\selection-subagent-capability.json `
+  --output <workflow-root>\selection-route.json
+```
+
+`subagent_only` with any status other than `available` is an error. In `auto`,
+only a startup inability causes embedding fallback; a later failed or invalid
+selection never changes the frozen route.
 
 Plan round one:
 
@@ -175,6 +205,29 @@ python scripts/build_selection_request.py `
   --candidates <round-dir>\candidate-segments.jsonl `
   --output <round-dir>\selection\selection-request.json
 ```
+
+If `selection-route.json` chooses `embedding`, run the local selector. It
+requires a checksum-verified, preinstalled E5 model and never downloads during
+selection:
+
+```powershell
+<absolute-embedding-runtime-python> scripts/select_embedding_topk.py `
+  --request <round-dir>\selection\selection-request.json `
+  --route <workflow-root>\selection-route.json `
+  --cache-dir <workflow-root>\cache\embedding `
+  --output-dir <round-dir>\selection
+```
+
+Use `embedding.runtime_python` from the authoritative bootstrap JSON (or its
+`-CheckOnly` report) as the interpreter. Never substitute a bare `python`:
+the checksum-locked ONNX dependencies live in that dedicated runtime, which
+may differ from the default Python on `PATH`.
+
+If the route chooses `subagent`, invoke the sibling selection Skill with the
+request and cumulative candidate path. Both routes must write the same v2
+selection result fields plus `selection_method` (`subagent` or `embedding`),
+`selection_route`, and a complete audit. The parent Agent judges sufficiency
+and may not equate vector facet scores with confirmed visual coverage.
 
 ## Budget semantics
 

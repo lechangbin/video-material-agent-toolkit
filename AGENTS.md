@@ -15,7 +15,8 @@ When the user asks to install or configure this toolkit from the repository URL:
    ```
 
 3. The bootstrap script detects and, when missing, installs CPython 3.14, uv, Node.js, the
-   selected Edge/Chrome browser channel, FFmpeg, both released CLI tools, and all repository
+   selected Edge/Chrome browser channel (Edge first by default), FFmpeg, three released CLI tools,
+   the checksum-verified offline Top-K model and its isolated Python runtime, and all repository
    Skills for supported Agent hosts.
 4. For an Agent host that is not supported by `npx skills`, pass each of its Skills roots with
    `-AdditionalSkillsDirectory`.
@@ -39,6 +40,8 @@ When the user asks to install or configure this toolkit from the repository URL:
   while the user completes any visible browser login. Do not create an alternative login command.
 - Do not claim the toolkit is fully operational until `semvideo doctor` passes for the user's
   workspace. Installation success and workspace readiness are separate states.
+- For the embedding Top-K route, use the absolute `embedding.runtime_python` returned by
+  bootstrap; the default `python` on `PATH` may lack its locked dependencies.
 
 ## Safe inspection
 

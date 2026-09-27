@@ -35,12 +35,14 @@ If this cap cannot provide two independent candidates per required facet, return
 
 ## Execution isolation
 
-Run this skill in a fresh selection subagent with no inherited parent conversation whenever subagents are available. Pass only:
+Run this skill only when the workflow's frozen `selection-route.json` chooses
+`subagent`. Use a fresh selection subagent with no inherited parent conversation. Pass only:
 
 - the selection-request artifact path and workflow identity;
 - the candidate artifact path and content hash;
 - the output directory;
 - the Skill path.
+- the frozen selection route path.
 
 Keep the full candidate summaries inside the selection subagent. Write the full selection result and audit trail to session artifacts. Return to the parent Agent only the result path, selected Top-K records, warnings, and aggregate counts. Keep selection-stage coverage notes in the artifact; do not present them as final material gaps.
 
@@ -67,6 +69,8 @@ If the candidate artifact exceeds the subagent’s safe context budget, partitio
 6. Apply deterministic tie-breaking in this order: required-facet priority, evidence
    completeness, lower redundancy, stable `candidate_segment_id`.
 7. Write selected and reserve candidates with reasons, selection-stage facet coverage, warnings, and input lineage to the result artifacts.
+   Record `selection_method: "subagent"` and the frozen `selection_route` in the
+   common v2 result. A failed or invalid result must not trigger a route switch.
 
 For sharded input, keep the complete per-candidate audit in an artifact. Do not return the audit or unselected summaries through the parent conversation.
 

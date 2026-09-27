@@ -116,6 +116,16 @@ def _selection_evidence(
     round_number: int = 1,
 ) -> dict[str, Any]:
     path = tmp_path / f"selection-result-{round_number}.json"
+    route = {
+        "schema_version": "video-material-selection-route/v1",
+        "workflow_id": workflow["workflow_id"],
+        "requested_mode": workflow["selection"]["mode"],
+        "route": "subagent",
+        "reason": "host_subagent_available",
+        "capability_status": "available",
+    }
+    route_path = Path(workflow["semantic_input"]["collection_input_path"]).parent.parent / "selection-route.json"
+    _write_json(route_path, route)
     payload = {
         "schema_version": "segment-selection-output/v2",
         "selection_id": f"sel_{round_number}",
@@ -125,6 +135,8 @@ def _selection_evidence(
         "segment_id": "seg_001",
         "round_number": round_number,
         "status": "selected",
+        "selection_method": "subagent",
+        "selection_route": route,
         "selected": [
             {
                 "candidate_segment_id": "job_1:segment_1",
@@ -192,6 +204,7 @@ def test_workflow_initialization_and_gap_round_preserve_budget(
         max_videos=18,
     )
     assert other_profile["workflow_id"] != workflow["workflow_id"]
+
 
     decision = {
         "schema_version": "video-material-gap-decision/v1",
@@ -268,6 +281,43 @@ def test_workflow_initialization_and_gap_round_preserve_budget(
             decision=decision,
             batch=mismatched_batch,
             previous_query_plans=[initial_plans],
+        )
+
+
+def test_selection_mode_uses_workspace_default_and_freezes_override(
+    tmp_path: Path,
+) -> None:
+    module = _load_script("init_workflow")
+    input_path, plans_path = _semantic_contracts(tmp_path)
+    material_workspace = tmp_path / "materials"
+    semvideo_workspace = tmp_path / "semvideo"
+    material_workspace.mkdir()
+    semvideo_workspace.mkdir()
+    _write_json(tmp_path / "selection-config.json", {"selection_mode": "embedding_only"})
+    common = {
+        "input_path": input_path,
+        "query_plans_path": plans_path,
+        "material_workspace": material_workspace,
+        "semvideo_workspace": semvideo_workspace,
+        "semvideo_profile": "default",
+        "max_rounds": 3,
+        "max_videos": 18,
+    }
+    default = module.initialize(workflow_root=tmp_path / "default", **common)
+    override = module.initialize(
+        workflow_root=tmp_path / "override",
+        selection_mode="subagent_only",
+        **common,
+    )
+
+    assert default["selection"]["mode"] == "embedding_only"
+    assert override["selection"]["mode"] == "subagent_only"
+    assert default["workflow_id"] != override["workflow_id"]
+    with pytest.raises(module.WorkflowInitError, match="selection mode"):
+        module.initialize(
+            workflow_root=tmp_path / "invalid",
+            selection_mode="mystery",
+            **common,
         )
 
 
@@ -757,6 +807,40 @@ def test_gap_round_rejects_a_query_used_in_an_earlier_round(tmp_path: Path) -> N
             decision=decision,
             batch=batch,
             previous_query_plans=[previous_plans],
+        )
+
+
+def test_gap_round_rejects_method_different_from_frozen_route(tmp_path: Path) -> None:
+    init_module = _load_script("init_workflow")
+    round_module = _load_script("plan_round")
+    input_path, plans_path = _semantic_contracts(tmp_path)
+    material_workspace = tmp_path / "materials"
+    semvideo_workspace = tmp_path / "semvideo"
+    material_workspace.mkdir()
+    semvideo_workspace.mkdir()
+    workflow = init_module.initialize(
+        input_path=input_path,
+        query_plans_path=plans_path,
+        workflow_root=tmp_path / "workflow",
+        material_workspace=material_workspace,
+        semvideo_workspace=semvideo_workspace,
+        semvideo_profile="default",
+        max_rounds=3,
+        max_videos=18,
+    )
+    evidence = _selection_evidence(tmp_path, workflow)
+    result_path = Path(evidence["selection_result_path"])
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    result["selection_method"] = "embedding"
+    _write_json(result_path, result)
+    evidence["selection_result_sha256"] = hashlib.sha256(result_path.read_bytes()).hexdigest()
+    with pytest.raises(round_module.RoundPlanError, match="frozen route"):
+        round_module._validate_selection_evidence(
+            {"evidence": evidence},
+            workflow,
+            segment_id="seg_001",
+            query_plan_id="qp_seg_001",
+            round_number=1,
         )
 
 

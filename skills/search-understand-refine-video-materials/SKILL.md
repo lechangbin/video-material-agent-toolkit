@@ -18,12 +18,17 @@ Before starting, read:
 3. the installed `semvideo/SKILL.md`;
 4. the sibling `select-video-segments/SKILL.md` and its selection contract.
 
+When the embedding route is enabled, retain
+[references/embedding-third-party-notices.md](references/embedding-third-party-notices.md)
+with this Skill distribution.
+
 Resolve the Collector once through the direct collection Skill and reuse that validated absolute
 command for workflow initialization and every Collector runner call. Use the bundled Collector
 runner for every lifecycle operation. Use only Semvideo's
 public CLI and always pass its mandatory context gate before a processing or
-recovery mutation. Run segment selection in the isolated subagent required by
-`select-video-segments`.
+recovery mutation. Freeze the selection route before collection: `auto` prefers
+an isolated text subagent for global Top-K, with a bundled offline embedding
+fallback only when the host cannot start one.
 
 ## Required inputs
 
@@ -35,6 +40,12 @@ Require:
 - an initialized Semvideo workspace and profile;
 - a caller-chosen workflow root;
 - positive per-theme-segment `max_rounds` and `max_videos`.
+
+Selection mode defaults to `auto`. The orchestration workspace may set its default
+in `<workflow-root-parent>/selection-config.json` as an object containing only
+`selection_mode` (`auto`, `subagent_only`, or `embedding_only`). The caller may
+override this for one workflow with `--selection-mode`. The effective mode is
+frozen in workflow identity. There is no model or endpoint setting in v0.4.
 
 An existing initial QueryPlan file is optional. When it is absent, the parent Agent
 must read the full script and every theme segment, derive the visual strategy and
@@ -57,6 +68,16 @@ Collector command returned by the direct Skill resolver through `--collector`; i
 read-only `contracts normalize` command so the frozen snapshot exactly matches
 session creation. If the workflow root already
 contains conflicting frozen input, stop instead of overwriting it.
+
+Immediately after initialization, check whether this Agent host can start a fresh
+text subagent with the selection Skill and a free execution slot. Write the
+observed result as `selection-subagent-capability/v1` with `status` one of
+`available`, `unavailable`, `launch_denied`, or `no_slot`; do not infer capability
+from a model name. For `embedding_only`, skip the check. Run
+`scripts/route_selection.py` to freeze `selection-route.json` before the first
+search round. In `auto`, only startup unavailability, launch denial, or no free
+slot permits embedding fallback. If a started subagent later fails or returns
+invalid output, stop with a structured error; never switch routes mid-workflow.
 
 Process theme segments serially. In-scope platform concurrency belongs inside one
 Collector session; do not create competing Collector sessions that share browser
@@ -96,10 +117,16 @@ Repeat the following bounded loop:
    Failed or incomplete jobs remain recorded but contribute no candidates. If no
    complete catalog exists, stop this segment as `understanding_failed`; do not
    invent a gap or launch a blind supplemental search.
-6. **Select global Top-K.** Run `scripts/build_selection_request.py`, then give
-   the request and candidate artifact to a fresh isolated subagent using
-   `select-video-segments`. Persist its v2 result and audit. Return only its compact
-   result to the parent Agent.
+6. **Select global Top-K.** Run `scripts/build_selection_request.py`. If the
+   frozen route is `subagent`, give the request and candidate artifact to a fresh
+   isolated text subagent using `select-video-segments`. If it is `embedding`, run
+   `scripts/select_embedding_topk.py` with the frozen route, request, output
+   directory, and workflow cache directory. Invoke it with the absolute
+   `embedding.runtime_python` reported by bootstrap, not bare `python`.
+   Persist the common v2 result and
+   complete audit. Return only its compact result to the parent Agent. Missing
+   offline model files or dependencies are errors, not runtime downloads. Vector
+   facet coverage is only a ranking proxy, not confirmed visual evidence.
 7. **Judge sufficiency in the parent Agent.** Read the frozen full script,
    current theme segment, required visual facets, and selected Top-K. Write the
    versioned gap decision defined in the workflow contract. Selection-stage
@@ -134,7 +161,7 @@ Repeat the following bounded loop:
   unselected sources; they remain workflow/session assets.
 - Never fetch high-quality media in this workflow. Defer that to the later editing
   stage after actual clip selection.
-- Never let Semvideo or the selection subagent decide final sufficiency or generate
+- Never let Semvideo or either selection route decide final sufficiency or generate
   supplemental search expressions.
 - Stop and preserve artifacts for human authentication, structured `user_action`,
   `report_bug`, cancellation, or invalid lineage. Do not recover by inventing shell

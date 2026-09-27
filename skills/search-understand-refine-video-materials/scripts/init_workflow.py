@@ -15,6 +15,7 @@ from typing import Any
 
 WORKFLOW_SCHEMA = "video-material-workflow/v1"
 PLATFORMS = ("bilibili", "douyin", "xiaohongshu", "youtube", "tiktok")
+SELECTION_MODES = ("auto", "subagent_only", "embedding_only")
 
 
 class WorkflowInitError(RuntimeError):
@@ -62,8 +63,10 @@ def _normalize_in_process(
     raw_input: dict[str, Any],
     raw_plans: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    from material_collector.core.contracts import normalize_contracts
-    from material_collector.core.errors import CollectorError
+    from material_collector.core.contracts import (  # type: ignore[import-untyped]
+        normalize_contracts,
+    )
+    from material_collector.core.errors import CollectorError  # type: ignore[import-untyped]
 
     try:
         normalized = normalize_contracts(raw_input, raw_plans)
@@ -113,12 +116,12 @@ def _normalize_with_collector(
     if not isinstance(payload, dict):
         raise WorkflowInitError("Collector contract normalization returned invalid JSON")
     if completed.returncode != 0:
-        error = payload.get("error")
-        code = error.get("code") if isinstance(error, dict) else "unknown"
-        message = error.get("message") if isinstance(error, dict) else "invalid contracts"
-        details = error.get("details") if isinstance(error, dict) else None
+        error_payload = payload.get("error")
+        code = error_payload.get("code") if isinstance(error_payload, dict) else "unknown"
+        message = error_payload.get("message") if isinstance(error_payload, dict) else "invalid contracts"
+        details = error_payload.get("details") if isinstance(error_payload, dict) else None
         raise WorkflowInitError(
-            message,
+            message if isinstance(message, str) else "invalid contracts",
             code=code if isinstance(code, str) else "collector_contract_rejected",
             details=details if isinstance(details, dict) else {},
         )
@@ -215,6 +218,7 @@ def initialize(
     semvideo_profile: str,
     max_rounds: int,
     max_videos: int,
+    selection_mode: str | None = None,
     collector_path: Path | None = None,
     normalizer_timeout_seconds: int = 30,
 ) -> dict[str, Any]:
@@ -248,6 +252,19 @@ def initialize(
     semvideo_workspace = semvideo_workspace.expanduser().resolve(strict=True)
     if not material_workspace.is_dir() or not semvideo_workspace.is_dir():
         raise WorkflowInitError("material and Semvideo workspaces must exist")
+    root = workflow_root.expanduser().resolve(strict=False)
+    selection_config_path = root.parent / "selection-config.json"
+    workspace_mode = "auto"
+    if selection_config_path.exists():
+        config = _load_object(selection_config_path)
+        if set(config) != {"selection_mode"}:
+            raise WorkflowInitError(
+                "selection config must contain only selection_mode"
+            )
+        workspace_mode = config["selection_mode"]
+    effective_mode = selection_mode if selection_mode is not None else workspace_mode
+    if effective_mode not in SELECTION_MODES:
+        raise WorkflowInitError("selection mode must be auto, subagent_only, or embedding_only")
     input_bytes = _canonical_bytes(collection_input)
     plans_bytes = _canonical_bytes(query_plans)
     identity = {
@@ -258,9 +275,9 @@ def initialize(
         "semvideo_profile": semvideo_profile,
         "max_rounds": max_rounds,
         "max_videos": max_videos,
+        "selection_mode": effective_mode,
     }
     workflow_id = f"vmw_{_sha256(_canonical_bytes(identity))[:20]}"
-    root = workflow_root.expanduser().resolve(strict=False)
     frozen_input = root / "input" / "collection-input.json"
     frozen_plans = root / "input" / "initial-query-plans.json"
     payload = {
@@ -272,6 +289,10 @@ def initialize(
         "material_workspace": str(material_workspace),
         "semvideo_workspace": str(semvideo_workspace),
         "semvideo_profile": semvideo_profile,
+        "selection": {
+            "mode": effective_mode,
+            "source": "workflow_override" if selection_mode is not None else "workspace_default",
+        },
         "constraints": {
             "max_rounds": max_rounds,
             "max_videos": max_videos,
@@ -309,6 +330,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--semvideo-profile", default="default")
     parser.add_argument("--max-rounds", type=int, default=3)
     parser.add_argument("--max-videos", type=int, default=18)
+    parser.add_argument("--selection-mode", choices=SELECTION_MODES)
     parser.add_argument("--collector")
     parser.add_argument("--normalizer-timeout-seconds", type=int, default=30)
     return parser
@@ -337,6 +359,7 @@ def main(argv: list[str] | None = None) -> int:
             semvideo_profile=arguments.semvideo_profile,
             max_rounds=arguments.max_rounds,
             max_videos=arguments.max_videos,
+            selection_mode=arguments.selection_mode,
             collector_path=_resolve_collector(arguments.collector),
             normalizer_timeout_seconds=arguments.normalizer_timeout_seconds,
         )
@@ -373,6 +396,7 @@ def main(argv: list[str] | None = None) -> int:
                 "workflow_id": payload["workflow_id"],
                 "workflow_path": str(workflow_path),
                 "plan_count": len(payload["plans"]),
+                "selection_mode": payload["selection"]["mode"],
             },
             ensure_ascii=False,
         )
